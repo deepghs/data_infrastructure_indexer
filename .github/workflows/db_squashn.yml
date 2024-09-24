@@ -67,9 +67,9 @@ jobs:
         env:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          REMOTE_REPOSITORY: ${{ secrets.REMOTE_REPOSITORY }}
           REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
           REMOTE_REPOSITORY_DB_N_PUBLIC: ${{ secrets.REMOTE_REPOSITORY_DB_N_PUBLIC }}
+          REMOTE_REPOSITORY_DB_N_PUBLIC_4M: ${{ secrets.REMOTE_REPOSITORY_DB_N_PUBLIC_4M }}
         shell: bash
         run: |
           python -m inf.db.dbsquash_n

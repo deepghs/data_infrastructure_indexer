@@ -67,7 +67,6 @@ jobs:
         env:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          REMOTE_REPOSITORY: ${{ secrets.REMOTE_REPOSITORY }}
           REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
         shell: bash
         run: |
