@@ -18,6 +18,7 @@ from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hbutils.testing import disable_output
 from hfutils.operate import upload_directory_as_directory, download_archive_as_directory, get_hf_client, get_hf_fs
+from hfutils.utils import number_to_tag
 from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from tqdm import tqdm
@@ -219,8 +220,26 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             with open(os.path.join(td, 'README.md'), 'w') as f:
                 print('---', file=f)
                 print('license: other', file=f)
+                print('task_categories:', file=f)
+                print('- image-classification', file=f)
+                print('- zero-shot-image-classification', file=f)
+                print('- text-to-image', file=f)
+                print('language:', file=f)
+                print('- en', file=f)
+                print('- ja', file=f)
+                print('tags:', file=f)
+                print('- art', file=f)
+                print('- anime', file=f)
+                print('- not-for-all-audiences', file=f)
+                print('size_categories:', file=f)
+                print(f'- {number_to_tag(len(exist_ids))}', file=f)
+                print('annotations_creators:', file=f)
+                print('- no-annotation', file=f)
+                print('source_datasets:', file=f)
+                print('- gelbooru', file=f)
                 print('---', file=f)
                 print('', file=f)
+
                 print('## Records', file=f)
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
