@@ -247,5 +247,4 @@ if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
     sync(
         repository=os.environ['REMOTE_REPOSITORY_GB'],
-        proxy_pool=os.environ.get('PP_GB'),
     )
