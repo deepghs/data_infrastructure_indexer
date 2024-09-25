@@ -17,14 +17,13 @@ from hbutils.collection import unique, nested_map
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hbutils.testing import disable_output
-from hfutils.operate import upload_directory_as_directory, download_archive_as_directory
+from hfutils.operate import upload_directory_as_directory, download_archive_as_directory, get_hf_client, get_hf_fs
 from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from tqdm import tqdm
+from waifuc.utils import srequest
 
-from inf.utils.session import srequest
 from .tags import _get_session, _get_tags_by_page
-from ..base import hf_client, hf_fs
 
 mimetypes.add_type('image/webp', '.webp')
 __site_url__ = 'https://gelbooru.com'
@@ -103,6 +102,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
          deploy_span: float = 5 * 60, sync_mode: bool = False, no_recent: float = 60 * 60 * 24 * 15,
          max_part_rows: int = 2500000, sync_from_archives: bool = True):
     start_time = time.time()
+    hf_client = get_hf_client()
+    hf_fs = get_hf_fs()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
     limiter = Limiter(rate, max_delay=1 << 32)
 
@@ -140,12 +141,12 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         max_blind_id = 9843600
         tag_mapping = {}
 
-    if hf_fs.glob(f'datasets/{repository}/tables/gelbooru-*.csv'):
-        last_path = natsorted(hf_fs.glob(f'datasets/{repository}/tables/gelbooru-*.csv'))[-1]
+    if hf_fs.glob(f'datasets/{repository}/tables/gelbooru-*.parquet'):
+        last_path = natsorted(hf_fs.glob(f'datasets/{repository}/tables/gelbooru-*.parquet'))[-1]
         last_file_name = os.path.basename(last_path)
         last_rel_file = os.path.relpath(last_path, f'datasets/{repository}')
         current_ptr = int(os.path.splitext(last_file_name)[0].split('-')[-1])
-        df_record = pd.read_csv(hf_client.hf_hub_download(
+        df_record = pd.read_parquet(hf_client.hf_hub_download(
             repo_id=repository,
             repo_type='dataset',
             filename=last_rel_file,
@@ -160,27 +161,19 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         current_ptr = 1
     logging.info(f'Current table ptr: {current_ptr!r}, records: {len(records)}')
 
-    df_origin_tags = pd.read_csv(hf_client.hf_hub_download(
+    df_origin_tags = pd.read_parquet(hf_client.hf_hub_download(
         repo_id=repository,
         repo_type='dataset',
-        filename='index_tags.csv',
+        filename='index_tags.parquet',
     ), keep_default_na=False)
     df_origin_tags = df_origin_tags.replace(np.NaN, None)
     d_origin_tags = {item['name']: item for item in df_origin_tags.to_dict('records')}
 
-    df_origin_tag_aliases = pd.read_csv(hf_client.hf_hub_download(
-        repo_id=repository,
-        repo_type='dataset',
-        filename='index_tag_aliases.csv',
-    ), keep_default_na=False)
-    df_origin_tag_aliases = df_origin_tag_aliases.replace(np.NaN, None)
-    d_origin_aliases = {item['alias']: item for item in df_origin_tag_aliases.to_dict('records')}
-
-    if hf_fs.exists(f'datasets/{repository}/tags.csv'):
-        df_tags = pd.read_csv(hf_client.hf_hub_download(
+    if hf_fs.exists(f'datasets/{repository}/tags.parquet'):
+        df_tags = pd.read_parquet(hf_client.hf_hub_download(
             repo_id=repository,
             repo_type='dataset',
-            filename='tags.csv',
+            filename='tags.parquet',
         ), keep_default_na=False)
         df_tags = df_tags.replace(np.NaN, None)
         df_tags['ambiguous'] = list(map(lambda x: bool(eval(x) if isinstance(x, str) else x), df_tags['ambiguous']))
@@ -201,16 +194,16 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             return
 
         with TemporaryDirectory() as td:
-            csv_file = os.path.join(td, 'tables', f'gelbooru-{current_ptr}.csv')
-            os.makedirs(os.path.dirname(csv_file), exist_ok=True)
+            parquet_file = os.path.join(td, 'tables', f'gelbooru-{current_ptr}.parquet')
+            os.makedirs(os.path.dirname(parquet_file), exist_ok=True)
             df_records = pd.DataFrame(records)
             df_records = df_records.sort_values(by=['id'], ascending=[False])
-            df_records.to_csv(csv_file, index=False)
+            df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
 
-            tags_file = os.path.join(td, 'tags.csv')
+            tags_file = os.path.join(td, 'tags.parquet')
             df_tags = pd.DataFrame(list(d_tags.values()))
             df_tags = df_tags.sort_values(['count', 'type'], ascending=[False, True])
-            df_tags.to_csv(tags_file, index=False)
+            df_tags.to_parquet(tags_file, engine='pyarrow', index=False)
 
             with open(os.path.join(td, 'exist_ids.json'), 'w') as f:
                 json.dump(sorted(exist_ids), f)
