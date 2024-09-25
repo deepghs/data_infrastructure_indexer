@@ -10,6 +10,7 @@ from typing import Optional
 import pandas as pd
 import requests.exceptions
 from ditk import logging
+from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory, urlsplit
 from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
 from hfutils.utils import get_requests_session
@@ -238,7 +239,8 @@ def sync(repository: str, proxy_pool: Optional[str] = None):
             repo_type='dataset',
             local_directory=td,
             path_in_repo='.',
-            message='Create tags index',
+            message=f'Create tags index, with {plural_word(len(df_tags), "tag")} '
+                    f'and {plural_word(len(df_tag_aliases), "tag alias")}',
             hf_token=os.environ['HF_TOKEN'],
         )
 

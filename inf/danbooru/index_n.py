@@ -109,7 +109,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
-                message=f'Adding {plural_word(_total_count - len(df_records), "new record")} into index',
+                message=f'Adding {plural_word(len(df_records) - _total_count, "new record")} into index',
                 hf_token=os.environ['HF_TOKEN'],
             )
             has_update = False

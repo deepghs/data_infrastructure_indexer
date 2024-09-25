@@ -184,9 +184,10 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
     session = _get_session()
     _last_update, has_update = None, False
+    _total_count = len(exist_ids)
 
     def _deploy(force=False):
-        nonlocal _last_update, has_update
+        nonlocal _last_update, has_update, _total_count
 
         if not has_update:
             return
@@ -251,9 +252,11 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
+                message=f'Add {plural_word(len(exist_ids) - _total_count, "new record")} into index',
             )
             has_update = False
             _last_update = time.time()
+            _total_count = len(exist_ids)
 
     def _yield_from_archives():
         if not sync_from_archives:
