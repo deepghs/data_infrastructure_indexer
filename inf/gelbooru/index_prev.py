@@ -424,6 +424,9 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             'file_url': item['file_url'],
             **item,
             'tags': ' '.join(['', *current_tags, '']),
+            'has_notes': json.loads(item['has_notes']),
+            'has_comments': json.loads(item['has_comments']),
+            'has_children': json.loads(item['has_children']),
             'scraped_at': time.time(),
         }
         records.append(row)
