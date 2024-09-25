@@ -53,9 +53,10 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
         exist_ids = set()
 
     _last_update, has_update = None, False
+    _total_count = len(records)
 
     def _deploy(force=False):
-        nonlocal _last_update, has_update
+        nonlocal _last_update, has_update, _total_count
 
         if not has_update:
             return
@@ -108,10 +109,12 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
+                message=f'Adding {plural_word(_total_count - len(df_records), "new record")} into index',
                 hf_token=os.environ['HF_TOKEN'],
             )
             has_update = False
             _last_update = time.time()
+            _total_count = len(df_records)
 
     source = DanbooruSource(['1girl'])
     source._prune_session()
