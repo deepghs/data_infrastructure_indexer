@@ -1,11 +1,11 @@
 #file: noinspection YAMLSchemaValidation
-name: Danbooru Squash
+name: Gelbooru Index
 
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '15 22 * * *'
+#  schedule:
+#    - cron: '0 */3 * * *'
 
 jobs:
   unittest:
@@ -67,9 +67,7 @@ jobs:
         env:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
-          REMOTE_REPOSITORY_DB_N_PUBLIC: ${{ secrets.REMOTE_REPOSITORY_DB_N_PUBLIC }}
-          REMOTE_REPOSITORY_DB_N_PUBLIC_4M: ${{ secrets.REMOTE_REPOSITORY_DB_N_PUBLIC_4M }}
+          REMOTE_REPOSITORY_GB: ${{ secrets.REMOTE_REPOSITORY_GB }}
         shell: bash
         run: |
-          python -m inf.danbooru.dbsquash_n
+          python -m inf.gelbooru.index_prev
