@@ -441,7 +441,7 @@ if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
     sync(
         repository=os.environ['REMOTE_REPOSITORY_GB'],
-        max_time_limit=(60 * 2 + 45) * 60,
+        max_time_limit=(60 * 5 + 45) * 60,
         sync_mode=True,
         sync_from_archives=True,
         no_recent=60 * 60 * 24 * 0,
