@@ -72,4 +72,4 @@ jobs:
           REMOTE_REPOSITORY_DB_N_PUBLIC_4M: ${{ secrets.REMOTE_REPOSITORY_DB_N_PUBLIC_4M }}
         shell: bash
         run: |
-          python -m inf.db.dbsquash_n
+          python -m inf.danbooru.dbsquash_n

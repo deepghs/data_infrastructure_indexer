@@ -70,4 +70,4 @@ jobs:
           REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
         shell: bash
         run: |
-          python -m inf.db.index_n
+          python -m inf.danbooru.index_n
