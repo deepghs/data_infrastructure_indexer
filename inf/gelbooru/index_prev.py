@@ -165,7 +165,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         repo_id=repository,
         repo_type='dataset',
         filename='index_tags.parquet',
-    ), keep_default_na=False)
+    ))
     df_origin_tags = df_origin_tags.replace(np.NaN, None)
     d_origin_tags = {item['name']: item for item in df_origin_tags.to_dict('records')}
 
@@ -174,7 +174,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             repo_id=repository,
             repo_type='dataset',
             filename='tags.parquet',
-        ), keep_default_na=False)
+        ))
         df_tags = df_tags.replace(np.NaN, None)
         df_tags['ambiguous'] = list(map(lambda x: bool(eval(x) if isinstance(x, str) else x), df_tags['ambiguous']))
         df_tags['name'] = list(map(html.unescape, df_tags['name']))
