@@ -6,14 +6,16 @@ import requests.exceptions
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
-from hfutils.operate import upload_directory_as_directory
-from pyskeb.utils import get_requests_session
-from pyskeb.utils.session import srequest
-from test.prepare.base import hf_client, hf_fs
+from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
+from hfutils.utils import get_requests_session
 from tqdm import tqdm
+from waifuc.utils import srequest
 
 
 def sync(repository: str):
+    hf_client = get_hf_client()
+    hf_fs = get_hf_fs()
+
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
         hf_client.update_repo_visibility(repo_id=repository, repo_type='dataset', private=True)
