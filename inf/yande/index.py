@@ -94,6 +94,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             parquet_file = os.path.join(td, 'yande.parquet')
             df_records = pd.DataFrame(records)
             df_records = df_records.sort_values(by=['id'], ascending=[False])
+            print(df_records.columns)
             df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
 
             tags_file = os.path.join(td, 'tags.parquet')
