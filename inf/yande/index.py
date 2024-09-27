@@ -12,7 +12,7 @@ from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
-from hfutils.utils import get_requests_session
+from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
@@ -80,9 +80,10 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         d_tags = {}
 
     _last_update, has_update = None, False
+    _total_count = len(records)
 
     def _deploy(force=False):
-        nonlocal _last_update, has_update
+        nonlocal _last_update, has_update, _total_count
 
         if not has_update:
             return
@@ -103,8 +104,26 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             with open(os.path.join(td, 'README.md'), 'w') as f:
                 print('---', file=f)
                 print('license: other', file=f)
+                print('task_categories:', file=f)
+                print('- image-classification', file=f)
+                print('- zero-shot-image-classification', file=f)
+                print('- text-to-image', file=f)
+                print('language:', file=f)
+                print('- en', file=f)
+                print('- ja', file=f)
+                print('tags:', file=f)
+                print('- art', file=f)
+                print('- anime', file=f)
+                print('- not-for-all-audiences', file=f)
+                print('size_categories:', file=f)
+                print(f'- {number_to_tag(len(df_records))}', file=f)
+                print('annotations_creators:', file=f)
+                print('- no-annotation', file=f)
+                print('source_datasets:', file=f)
+                print('- yande', file=f)
                 print('---', file=f)
                 print('', file=f)
+
                 print('## Records', file=f)
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
@@ -136,9 +155,11 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
+                message=f'Add {plural_word(len(exist_ids) - _total_count, "new record")} into index',
             )
             has_update = False
             _last_update = time.time()
+            _total_count = len(df_records)
 
     while True:
         session = get_requests_session()
