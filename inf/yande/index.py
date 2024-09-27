@@ -54,7 +54,6 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             repo_type='dataset',
             filename='yande.parquet',
         )).replace(np.NaN, None)
-        df_['flag_detail'] = df_['flag_detail'].map(lambda x: eval(x) if x else None)
         exist_ids = set(df_['id'])
         pre_ids = set(df_['id'])
         records = df_.to_dict('records')
@@ -95,7 +94,6 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             parquet_file = os.path.join(td, 'yande.parquet')
             df_records = pd.DataFrame(records)
             df_records = df_records.sort_values(by=['id'], ascending=[False])
-            print(df_records.columns)
             df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
 
             tags_file = os.path.join(td, 'tags.parquet')
