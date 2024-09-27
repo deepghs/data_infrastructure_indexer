@@ -54,6 +54,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             repo_type='dataset',
             filename='yande.parquet',
         )).replace(np.NaN, None)
+        df_['flag_detail'] = df_['flag_detail'].map(lambda x: eval(x) if x else None)
         exist_ids = set(df_['id'])
         pre_ids = set(df_['id'])
         records = df_.to_dict('records')
