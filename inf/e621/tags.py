@@ -51,7 +51,8 @@ def sync(repository: str):
     logging.info(f'Last updated official index date is {last_date!r}.')
     mps = {}
     with TemporaryDirectory() as upload_dir:
-        for tab_name in tqdm(['pools', 'tag_aliases', 'tag_implications', 'tags', 'wiki_pages'], desc='Sync Tables'):
+        for tab_name in tqdm(['pools', 'posts', 'tag_aliases', 'tag_implications', 'tags', 'wiki_pages'],
+                             desc='Sync Tables'):
             logging.info(f'Making for {tab_name!r} ...')
             source_url = urljoin('https://e621.net/db_export/', f'{tab_name}-{last_date}.csv.gz')
             with TemporaryDirectory() as td:
