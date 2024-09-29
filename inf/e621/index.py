@@ -61,7 +61,7 @@ def _get_posts(session: Optional[requests.Session] = None,
     logging.info(f'Query posts: {params!r} ...')
     resp = session.get('https://e621.net/posts.json', params=params)
     resp.raise_for_status()
-    return resp.json()['posts']
+    return sorted(resp.json()['posts'], key=lambda x: x['id'])
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
