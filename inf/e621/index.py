@@ -184,7 +184,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print('- anime', file=f)
                 print('- not-for-all-audiences', file=f)
                 print('size_categories:', file=f)
-                print(f'- {number_to_tag(len(df_records))}', file=f)
+                print(f'- {number_to_tag(len(exist_ids))}', file=f)
                 print('annotations_creators:', file=f)
                 print('- no-annotation', file=f)
                 print('source_datasets:', file=f)
@@ -196,7 +196,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
                     ['id', 'width', 'height', 'rating', 'tags', 'file_size', 'mimetype', 'file_url']]
-                print(f'{plural_word(len(df_records), "record")} in total. '
+                print(f'{plural_word(len(exist_ids), "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
                 print(df_records_shown.to_markdown(index=False), file=f)
@@ -224,11 +224,11 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
-                message=f'Add {plural_word(len(df_records) - _total_count, "new record")} into index',
+                message=f'Add {plural_word(len(exist_ids) - _total_count, "new record")} into index',
             )
             has_update = False
             _last_update = time.time()
-            _total_count = len(df_records)
+            _total_count = len(exist_ids)
 
     def _iter_up():
         nonlocal max_id, has_update
