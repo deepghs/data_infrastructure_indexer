@@ -3,7 +3,6 @@ import mimetypes
 import os
 import time
 from itertools import chain
-from pprint import pprint
 from typing import Optional, List
 
 import httpx
@@ -30,6 +29,23 @@ _TAG_CATEGORIES = {
     8: 'lore',
 }
 _TAG_INV_CATEGORIES = {value: key for key, value in _TAG_CATEGORIES.items()}
+
+
+def _parquet_safe(v):
+    if isinstance(v, dict):
+        if not v:
+            return type(v)({'__dummy': None})  # dont save empty dict in parquet
+        else:
+            return type(v)({
+                key: _parquet_safe(value)
+                for key, value in v.items()
+            })
+
+    elif isinstance(v, (list, tuple)):
+        return type(v)([_parquet_safe(item) for item in v])
+
+    else:
+        return v
 
 
 def _get_posts(session: Optional[requests.Session] = None,
@@ -240,7 +256,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             logging.warning(f'Post {post["id"]!r} already exist, skipped.')
             continue
 
-        pprint(post)
+        logging.info(f'Post {post["id"]!r} confirmed.')
         file_info = post.pop('file')
         flags_info = post.pop('flags')
         preview_info = post.pop('preview')
@@ -286,6 +302,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             'created_at': post['created_at'],
             'updated_at': post['updated_at'],
         }
+        row['sample_alternates'] = _parquet_safe(row['sample_alternates'])
+        records.append(row)
 
         for key, values in tags_info.items():
             for value in values:
@@ -311,6 +329,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                         }
                 if d_tags[token]['id'] == -1 and token in d_origin_tags:
                     d_tags[token]['id'] = d_origin_tags[token]['id']
+                if token in d_origin_tags:
                     d_tags[token]['total_count'] = d_origin_tags[token]['post_count']
                 d_tags[token]['count'] += 1
 
