@@ -173,7 +173,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print('## Records', file=f)
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
-                    ['id', 'width', 'height', 'rating', 'file_size', 'mimetype', 'file_url']]
+                    ['id', 'width', 'height', 'rating', 'tags', 'file_size', 'mimetype', 'file_url']]
                 print(f'{plural_word(len(df_records), "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
@@ -282,7 +282,6 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             'rating': post['rating'],
 
             'tags': list(chain(*tags_info.values())),
-            **{f'tags_{key}': value for key, value in tags_info.items()},
 
             'uploader_id': post['uploader_id'],
             'approver_id': post['approver_id'],
