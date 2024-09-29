@@ -13,6 +13,7 @@ import requests
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
+from hfutils.cache import delete_detached_cache
 from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
 from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
@@ -64,8 +65,9 @@ def _get_posts(session: Optional[requests.Session] = None,
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
-         max_time_limit: float = 50 * 60):
+         max_time_limit: float = 50 * 60, max_part_rows: int = 1000000):
     start_time = time.time()
+    delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
     limiter = Limiter(rate, max_delay=1 << 32)
     hf_client = get_hf_client()
@@ -82,14 +84,24 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             os.linesep.join(attr_lines),
         )
 
-    if hf_fs.exists(f'datasets/{repository}/e621.parquet'):
+    if hf_fs.glob(f'datasets/{repository}/e621-*.parquet'):
+        last_page_id = sorted([
+            int(os.path.splitext(os.path.basename(path))[0].split('-')[-1])
+            for path in hf_fs.glob(f'datasets/{repository}/e621-*.parquet')
+        ])[-1]
+
         df = pd.read_parquet(hf_client.hf_hub_download(
             repo_id=repository,
             repo_type='dataset',
-            filename='e621.parquet',
+            filename=f'e621-{last_page_id}.parquet',
         )).replace(np.nan, None)
-        records = df.to_dict('records')
+        if len(df) >= max_part_rows:
+            last_page_id += 1
+            records = []
+        else:
+            records = df.to_dict('records')
     else:
+        last_page_id = 1
         records = []
 
     if hf_fs.exists(f'datasets/{repository}/meta.json'):
@@ -141,7 +153,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             return
 
         with TemporaryDirectory() as td:
-            parquet_file = os.path.join(td, 'e621.parquet')
+            parquet_file = os.path.join(td, f'e621-{last_page_id}.parquet')
             df_records = pd.DataFrame(records)
             df_records = df_records.sort_values(by=['id'], ascending=[False])
             df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
@@ -232,6 +244,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 has_new_items = True
                 if max_id is None or item['id'] > max_id:
                     max_id = item['id']
+                    has_update = True
 
             if not has_new_items:
                 break
@@ -334,5 +347,6 @@ if __name__ == '__main__':
     sync(
         repository=os.environ['REMOTE_REPOSITORY_E621'],
         deploy_span=5 * 60,
-        max_time_limit=5.5 * 60 * 60,
+        max_time_limit=1.5 * 60 * 60,
+        max_part_rows=1000000,
     )
