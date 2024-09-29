@@ -1,0 +1,329 @@
+import math
+import mimetypes
+import os
+import time
+from itertools import chain
+from pprint import pprint
+from typing import Optional, List
+
+import httpx
+import numpy as np
+import pandas as pd
+import requests
+from ditk import logging
+from hbutils.string import plural_word
+from hbutils.system import TemporaryDirectory
+from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
+from hfutils.utils import get_requests_session, number_to_tag
+from pyrate_limiter import Rate, Duration, Limiter
+
+mimetypes.add_type('image/webp', '.webp')
+
+_TAG_CATEGORIES = {
+    0: 'general',
+    1: 'artist',
+    3: 'copyright',
+    4: 'character',
+    5: 'species',
+    6: 'invalid',
+    7: 'meta',
+    8: 'lore',
+}
+_TAG_INV_CATEGORIES = {value: key for key, value in _TAG_CATEGORIES.items()}
+
+
+def _get_posts(session: Optional[requests.Session] = None,
+               before_id: Optional[int] = None, after_id: Optional[int] = None) -> List[dict]:
+    session = session or get_requests_session()
+    params = {'limit': '1000'}
+    if before_id is not None:
+        params['page'] = f'b{before_id}'
+    elif after_id is not None:
+        params['page'] = f'a{after_id}'
+    logging.info(f'Query posts: {params!r} ...')
+    resp = session.get('https://e621.net/posts.json', params=params)
+    resp.raise_for_status()
+    return resp.json()['posts']
+
+
+def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
+         max_time_limit: float = 50 * 60):
+    start_time = time.time()
+    rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
+    limiter = Limiter(rate, max_delay=1 << 32)
+    hf_client = get_hf_client()
+    hf_fs = get_hf_fs()
+    if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
+        hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
+        hf_client.update_repo_visibility(repo_id=repository, repo_type='dataset', private=True)
+        attr_lines = hf_fs.read_text(f'datasets/{repository}/.gitattributes').splitlines(keepends=False)
+        attr_lines.append('*.json filter=lfs diff=lfs merge=lfs -text')
+        attr_lines.append('*.csv filter=lfs diff=lfs merge=lfs -text')
+        attr_lines.append('*.db filter=lfs diff=lfs merge=lfs -text')
+        hf_fs.write_text(
+            f'datasets/{repository}/.gitattributes',
+            os.linesep.join(attr_lines),
+        )
+
+    if hf_fs.exists(f'datasets/{repository}/e621.parquet'):
+        df = pd.read_parquet(hf_client.hf_hub_download(
+            repo_id=repository,
+            repo_type='dataset',
+            filename='e621.parquet',
+        )).replace(np.nan, None)
+        max_id = df['id'].max().item()
+        min_id = df['id'].min().item()
+        exist_ids = set(df['id'])
+        records = df.to_dict('records')
+    else:
+        max_id, min_id = None, None
+        exist_ids = set()
+        records = []
+
+    df_origin_tags = pd.read_parquet(hf_client.hf_hub_download(
+        repo_id=repository,
+        repo_type='dataset',
+        filename='index_tags.parquet',
+    ))
+    d_origin_tags = {(item['category'], item['name']): item for item in df_origin_tags.to_dict('records')}
+
+    if hf_fs.exists(f'datasets/{repository}/tags.parquet'):
+        df_tags = pd.read_parquet(hf_client.hf_hub_download(
+            repo_id=repository,
+            repo_type='dataset',
+            filename='tags.parquet',
+        ))
+        d_tags = {(item['category'], item['name']): item for item in df_tags.to_dict('records')}
+    else:
+        d_tags = {}
+
+    while True:
+        session = get_requests_session()
+        logging.info(f'Try user agent: {session.headers["User-Agent"]!r} ...')
+        try:
+            _ = _get_posts(session)
+        except (requests.RequestException, httpx.HTTPStatusError) as err:
+            if err.response.status_code == 403:
+                continue
+            raise
+        else:
+            break
+
+    _last_update, has_update = None, False
+    _total_count = len(exist_ids)
+
+    def _deploy(force=False):
+        nonlocal _last_update, has_update, _total_count
+
+        if not has_update:
+            return
+        if not force and _last_update is not None and _last_update + deploy_span > time.time():
+            return
+
+        with TemporaryDirectory() as td:
+            parquet_file = os.path.join(td, 'e621.parquet')
+            df_records = pd.DataFrame(records)
+            df_records = df_records.sort_values(by=['id'], ascending=[False])
+            df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
+
+            tags_file = os.path.join(td, 'tags.parquet')
+            df_tags = pd.DataFrame(list(d_tags.values()))
+            df_tags = df_tags.sort_values(['count', 'category'], ascending=[False, True])
+            df_tags.to_parquet(tags_file, engine='pyarrow', index=False)
+
+            with open(os.path.join(td, 'README.md'), 'w') as f:
+                print('---', file=f)
+                print('license: other', file=f)
+                print('task_categories:', file=f)
+                print('- image-classification', file=f)
+                print('- zero-shot-image-classification', file=f)
+                print('- text-to-image', file=f)
+                print('language:', file=f)
+                print('- en', file=f)
+                print('- ja', file=f)
+                print('tags:', file=f)
+                print('- art', file=f)
+                print('- anime', file=f)
+                print('- not-for-all-audiences', file=f)
+                print('size_categories:', file=f)
+                print(f'- {number_to_tag(len(df_records))}', file=f)
+                print('annotations_creators:', file=f)
+                print('- no-annotation', file=f)
+                print('source_datasets:', file=f)
+                print('- e621', file=f)
+                print('---', file=f)
+                print('', file=f)
+
+                print('## Records', file=f)
+                print(f'', file=f)
+                df_records_shown = df_records[:50][
+                    ['id', 'width', 'height', 'rating', 'file_size', 'mimetype', 'file_url']]
+                print(f'{plural_word(len(df_records), "record")} in total. '
+                      f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
+                print(f'', file=f)
+                print(df_records_shown.to_markdown(index=False), file=f)
+                print(f'', file=f)
+
+                print('## Tags', file=f)
+                print(f'', file=f)
+                print(f'{plural_word(len(df_tags), "tag")} in total.', file=f)
+                print(f'', file=f)
+                for type_id in sorted(set(df_tags['category'])):
+                    df_tags_type = df_tags[df_tags['category'] == type_id]
+                    df_tags_type = df_tags_type[['id', 'name', 'category', 'count', 'total_count']]
+                    df_tags_shown = df_tags_type[:30]
+                    df_tags_shown = df_tags_shown.replace(np.NaN, '')
+                    print(f'These are the top {plural_word(len(df_tags_shown), "tag")} '
+                          f'({plural_word(len(df_tags_type), "tag")} in total) '
+                          f'of type `{_TAG_CATEGORIES.get(type_id, type_id)} ({type_id})`:', file=f)
+                    print('', file=f)
+                    print(df_tags_shown.to_markdown(index=False), file=f)
+                    print('', file=f)
+
+            limiter.try_acquire('hf upload limit')
+            upload_directory_as_directory(
+                repo_id=repository,
+                repo_type='dataset',
+                local_directory=td,
+                path_in_repo='.',
+                message=f'Add {plural_word(len(df_records) - _total_count, "new record")} into index',
+            )
+            has_update = False
+            _last_update = time.time()
+            _total_count = len(df_records)
+
+    def _iter_up():
+        nonlocal max_id, min_id, has_update
+        if max_id is None:
+            return
+
+        while True:
+            if start_time + max_time_limit < time.time():
+                break
+            has_new_items = False
+            for item in _get_posts(session=session, after_id=max_id):
+                yield item
+                has_new_items = True
+                if max_id is None or item['id'] > max_id:
+                    max_id = item['id']
+                if min_id is None or item['id'] < min_id:
+                    min_id = item['id']
+
+            if not has_new_items:
+                break
+
+    def _iter_down():
+        nonlocal max_id, min_id, has_update
+        while True:
+            if start_time + max_time_limit < time.time():
+                break
+            has_new_items = False
+            for item in _get_posts(session=session, before_id=min_id):
+                yield item
+                has_new_items = True
+                if max_id is None or item['id'] > max_id:
+                    max_id = item['id']
+                if min_id is None or item['id'] < min_id:
+                    min_id = item['id']
+
+            if not has_new_items:
+                break
+
+    def _iter_posts():
+        yield from _iter_up()
+        yield from _iter_down()
+
+    for post in _iter_posts():
+        if start_time + max_time_limit < time.time():
+            break
+        if post['id'] in exist_ids:
+            logging.warning(f'Post {post["id"]!r} already exist, skipped.')
+            continue
+
+        pprint(post)
+        file_info = post.pop('file')
+        flags_info = post.pop('flags')
+        preview_info = post.pop('preview')
+        sample_info = post.pop('sample')
+        score_info = post.pop('score')
+        tags_info = post.pop('tags')
+        relationships_info = post.pop('relationships')
+        if file_info['url']:
+            mimetype, _ = mimetypes.guess_type(file_info['url'])
+        else:
+            mimetype = None
+
+        row = {
+            'id': post['id'],
+
+            'mimetype': mimetype,
+            'file_ext': file_info['ext'],
+            'width': file_info['width'],
+            'height': file_info['height'],
+            'md5': file_info['md5'],
+            'file_url': file_info['url'],
+            'file_size': file_info['size'],
+            'rating': post['rating'],
+
+            'tags': list(chain(*tags_info.values())),
+            **{f'tags_{key}': value for key, value in tags_info.items()},
+
+            'uploader_id': post['uploader_id'],
+            'approver_id': post['approver_id'],
+
+            'score': score_info['total'],
+            'up_score': score_info['up'],
+            'down_score': score_info['down'],
+            'fav_count': post['fav_count'],
+
+            **{f'preview_{key}': value for key, value in preview_info.items()},
+            **{f'sample_{key}': value for key, value in sample_info.items()},
+            **{f'is_{key}': value for key, value in flags_info.items()},
+
+            **relationships_info,
+            **post,
+
+            'created_at': post['created_at'],
+            'updated_at': post['updated_at'],
+        }
+
+        for key, values in tags_info.items():
+            for value in values:
+                category_id = _TAG_INV_CATEGORIES[key]
+                tag_name = value
+                token = (category_id, tag_name)
+                if token not in d_tags:
+                    if token in d_origin_tags:
+                        d_tags[token] = {
+                            'id': d_origin_tags[token]['id'],
+                            'name': d_origin_tags[token]['name'],
+                            'category': d_origin_tags[token]['category'],
+                            'count': 0,
+                            'total_count': d_origin_tags[token]['post_count']
+                        }
+                    else:
+                        d_tags[token] = {
+                            'id': -1,
+                            'name': tag_name,
+                            'category': category_id,
+                            'count': 0,
+                            'total_count': -1,
+                        }
+                if d_tags[token]['id'] == -1 and token in d_origin_tags:
+                    d_tags[token]['id'] = d_origin_tags[token]['id']
+                    d_tags[token]['total_count'] = d_origin_tags[token]['post_count']
+                d_tags[token]['count'] += 1
+
+        has_update = True
+        _deploy(force=False)
+
+    _deploy(force=True)
+
+
+if __name__ == '__main__':
+    logging.try_init_root(logging.INFO)
+    sync(
+        repository=os.environ['REMOTE_REPOSITORY_E621'],
+        deploy_span=5 * 60,
+        max_time_limit=5.5 * 60 * 60,
+    )

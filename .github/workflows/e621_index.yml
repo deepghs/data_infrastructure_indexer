@@ -1,11 +1,11 @@
 #file: noinspection YAMLSchemaValidation
-name: E621 Tags
+name: E621 Index
 
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '0 10 * * *'
+#  schedule:
+#    - cron: '0 10 * * *'
 
 jobs:
   unittest:
@@ -70,4 +70,4 @@ jobs:
           REMOTE_REPOSITORY_E621: ${{ secrets.REMOTE_REPOSITORY_E621 }}
         shell: bash
         run: |
-          python -m inf.e621.tags
+          python -m inf.e621.index
