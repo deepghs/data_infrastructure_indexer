@@ -1,3 +1,4 @@
+import json
 import math
 import mimetypes
 import os
@@ -87,14 +88,17 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             repo_type='dataset',
             filename='e621.parquet',
         )).replace(np.nan, None)
-        max_id = df['id'].max().item()
-        min_id = df['id'].min().item()
-        exist_ids = set(df['id'])
         records = df.to_dict('records')
     else:
-        max_id, min_id = None, None
-        exist_ids = set()
         records = []
+
+    if hf_fs.exists(f'datasets/{repository}/meta.json'):
+        meta_info = json.loads(hf_fs.read_text(f'datasets/{repository}/meta.json'))
+        max_id = meta_info['max_id']
+        exist_ids = set(meta_info['exist_ids'])
+    else:
+        max_id = 0
+        exist_ids = set()
 
     df_origin_tags = pd.read_parquet(hf_client.hf_hub_download(
         repo_id=repository,
@@ -146,6 +150,12 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             df_tags = pd.DataFrame(list(d_tags.values()))
             df_tags = df_tags.sort_values(['count', 'category'], ascending=[False, True])
             df_tags.to_parquet(tags_file, engine='pyarrow', index=False)
+
+            with open(os.path.join(td, 'meta.json'), 'w') as f:
+                json.dump({
+                    'exist_ids': sorted(exist_ids),
+                    'max_id': max_id,
+                }, f)
 
             with open(os.path.join(td, 'README.md'), 'w') as f:
                 print('---', file=f)
@@ -209,7 +219,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             _total_count = len(df_records)
 
     def _iter_up():
-        nonlocal max_id, min_id, has_update
+        nonlocal max_id, has_update
         if max_id is None:
             return
 
@@ -222,32 +232,12 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 has_new_items = True
                 if max_id is None or item['id'] > max_id:
                     max_id = item['id']
-                if min_id is None or item['id'] < min_id:
-                    min_id = item['id']
-
-            if not has_new_items:
-                break
-
-    def _iter_down():
-        nonlocal max_id, min_id, has_update
-        while True:
-            if start_time + max_time_limit < time.time():
-                break
-            has_new_items = False
-            for item in _get_posts(session=session, before_id=min_id):
-                yield item
-                has_new_items = True
-                if max_id is None or item['id'] > max_id:
-                    max_id = item['id']
-                if min_id is None or item['id'] < min_id:
-                    min_id = item['id']
 
             if not has_new_items:
                 break
 
     def _iter_posts():
         yield from _iter_up()
-        yield from _iter_down()
 
     for post in _iter_posts():
         if start_time + max_time_limit < time.time():
@@ -332,6 +322,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                     d_tags[token]['total_count'] = d_origin_tags[token]['post_count']
                 d_tags[token]['count'] += 1
 
+        exist_ids.add(row['id'])
         has_update = True
         _deploy(force=False)
 
