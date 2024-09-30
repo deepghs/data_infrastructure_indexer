@@ -45,6 +45,13 @@ def sync(repository: str, exist_repo: str):
             json.dump(sorted(exist_ids), f)
 
         upload_directory_as_directory(
+            repo_id=repository,
+            repo_type='dataset',
+            local_directory=td,
+            path_in_repo='.',
+            message=f'Sync {plural_word(len(exist_ids), "previous exist id")} from {exist_repo!r}',
+        )
+        upload_directory_as_directory(
             repo_id=exist_repo,
             repo_type='dataset',
             local_directory=td,
