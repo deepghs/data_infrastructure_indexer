@@ -48,11 +48,17 @@ def _get_posts(service: str, uid: str, session: Optional[requests.Session] = Non
         )
         if resp.status_code == 400:
             break
+        try:
+            lst = resp.json()
+        except requests.exceptions.JSONDecodeError as err:
+            logging.warning(f'JSON Error - {err}, retry.')
+            continue
+
         resp.raise_for_status()
-        yield from resp.json()
-        if not resp.json():
+        yield from lst
+        if not lst:
             break
-        offset += len(resp.json())
+        offset += len(lst)
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
