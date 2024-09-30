@@ -91,10 +91,12 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         exist_ids = set(meta_info['exist_ids'])
         d_last_updates = meta_info['d_last_updates']
         max_file_id = meta_info['max_file_id']
+        d_types = meta_info['d_types']
     else:
         exist_ids = set()
         d_last_updates = {}
         max_file_id = 0
+        d_types = {}
 
     if hf_fs.glob(f'datasets/{repository}/pages/*/posts.parquet'):
         current_page_id = sorted([
@@ -171,6 +173,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                     'exist_ids': sorted(exist_ids),
                     'd_last_updates': d_last_updates,
                     'max_file_id': max_file_id,
+                    'd_types': d_types,
                 }, f)
 
             with open(os.path.join(td, 'README.md'), 'w') as f:
@@ -208,6 +211,13 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print(f'', file=f)
 
                 print('## Files', file=f)
+                print(f'', file=f)
+                df_file_types = pd.DataFrame([
+                    {'type': key, 'count': value}
+                    for key, value in d_types.items()
+                ])
+                df_file_types = df_file_types.sort_values(by=['count', 'type'], ascending=[False, True])
+                print(df_file_types.to_markdown(index=False), file=f)
                 print(f'', file=f)
                 df_attachments_shown = df_attachments[:50][
                     ['id', 'post_id', 'type', 'filename', 'mimetype', 'path']]
@@ -309,6 +319,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 'name': attachment_item['name'],
                 'path': attachment_item['path'],
             })
+            d_types[type_] = d_types.get(type_, 0) + 1
 
         row = {
             'id': id_,
