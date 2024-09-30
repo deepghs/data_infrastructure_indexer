@@ -148,7 +148,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print('## Records', file=f)
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
-                    ['id', 'service', 'user', 'title', 'tags', 'file_count', 'published', 'added']]
+                    ['id', 'service', 'user', "post_id", 'title', 'tags', 'file_count', 'published', 'added']]
                 print(f'{plural_word(len(exist_ids), "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
