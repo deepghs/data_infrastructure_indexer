@@ -216,6 +216,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             attachments_info = [file_info, *attachments_info]
         embed_info = post_item.pop('embed')
         post_id = post_item.pop('id')
+        tags_info = post_item.pop('tags')
 
         row = {
             'id': id_,
@@ -226,7 +227,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             'page_url': f'https://kemono.su/{post_item["service"]}/user/{post_item["user"]}/post/{post_id}',
 
             'title': post_item['title'],
-            'tags': post_item['tags'],
+            'tags': tags_info if isinstance(tags_info, (str, type(None))) else json.dumps(tags_info),
             'content': post_item['content'],
             'captions': post_item['captions'],
 
