@@ -33,11 +33,12 @@ def sync(repository: str):
         filename='creators.parquet',
     ))
     df_creators = df_creators.sort_values(by=['updated'], ascending=[False])
+    df_creators = df_creators[df_creators['service'] != 'discord']
     print(df_creators)
     print(df_creators['service'].value_counts())
 
-    for s in sorted(set(df_creators['service'])):
-        print(s, df_creators[df_creators['service'] == s])
+    # for s in sorted(set(df_creators['service'])):
+    #     print(s, df_creators[df_creators['service'] == s])
 
     quit()
 

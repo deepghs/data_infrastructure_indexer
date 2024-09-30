@@ -347,6 +347,6 @@ if __name__ == '__main__':
     sync(
         repository=os.environ['REMOTE_REPOSITORY_E621'],
         deploy_span=5 * 60,
-        max_time_limit=1.5 * 60 * 60,
+        max_time_limit=5.5 * 60 * 60,
         max_part_rows=1000000,
     )
