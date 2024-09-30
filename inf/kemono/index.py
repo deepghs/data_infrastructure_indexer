@@ -41,7 +41,11 @@ def _get_posts(service: str, uid: str, session: Optional[requests.Session] = Non
     offset = 0
     while True:
         logging.info(f'Searching {service} #{uid}, offset: {offset} ...')
-        resp = srequest(session, 'GET', f'{_ROOT}/api/v1/{service}/user/{uid}', params={'o': str(offset)})
+        resp = srequest(
+            session, 'GET', f'{_ROOT}/api/v1/{service}/user/{uid}',
+            params={'o': str(offset)},
+            raise_for_status=False,
+        )
         if resp.status_code == 400:
             break
         resp.raise_for_status()
