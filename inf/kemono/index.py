@@ -290,7 +290,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                     filename = attachment_item['name']
 
             mimetype, _ = mimetypes.guess_type(attachment_item['path'])
-            if 'photoshop' in mimetype:
+            if mimetype and 'photoshop' in mimetype:
                 type_ = 'photoshop'
             elif mimetype and mimetype.startswith('image/'):
                 type_ = 'image'
