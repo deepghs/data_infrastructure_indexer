@@ -364,5 +364,5 @@ if __name__ == '__main__':
         deploy_span=2.5 * 60,
         max_time_limit=5.5 * 60 * 60,
         proxy_pool=os.environ['PP_AO3'],
-        max_posts_count=2000000,
+        max_posts_count=700000,
     )
