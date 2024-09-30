@@ -362,7 +362,7 @@ if __name__ == '__main__':
     sync(
         repository=os.environ['REMOTE_REPOSITORY_KMN'],
         deploy_span=2.5 * 60,
-        max_time_limit=5.5 * 60 * 60,
+        max_time_limit=0.9 * 60 * 60,
         proxy_pool=os.environ['PP_AO3'],
-        max_posts_count=700000,
+        max_posts_count=800000,
     )
