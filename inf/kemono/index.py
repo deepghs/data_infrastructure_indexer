@@ -299,7 +299,10 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         tags_info = post_item.pop('tags')
 
         attachment_ids = []
+        exist_paths = set()
         for attachment_item in attachments_info:
+            if attachment_item['path'] in exist_paths:
+                continue
             filename = os.path.basename(attachment_item['name'])
             name_type = _get_file_type(filename)
             url_type = _get_file_type(attachment_item['path'])
@@ -320,6 +323,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 'path': attachment_item['path'],
             })
             d_types[type_] = d_types.get(type_, 0) + 1
+            exist_paths.add(attachment_item['path'])
 
         row = {
             'id': id_,
