@@ -40,6 +40,30 @@ def _parquet_safe(v):
         return v
 
 
+def _get_file_type(file_path) -> Optional[str]:
+    _, filename = os.path.splitext(file_path)
+    mimetype, _ = mimetypes.guess_type(filename)
+    if mimetype and 'photoshop' in mimetype:
+        type_ = 'photoshop'
+    elif mimetype and mimetype.startswith('image/'):
+        type_ = 'image'
+    elif mimetype and mimetype.startswith('audio/'):
+        type_ = 'audio'
+    elif mimetype and mimetype.startswith('video/'):
+        type_ = 'video'
+    elif mimetype and mimetype.startswith('text/'):
+        type_ = 'text'
+    else:
+        try:
+            get_archive_type(filename)
+        except ValueError:
+            type_ = None
+        else:
+            type_ = 'archive'
+
+    return type_
+
+
 def _get_posts(service: str, uid: str, session: Optional[requests.Session] = None):
     session = session or get_requests_session()
     offset = 0
@@ -143,7 +167,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         })
 
     _last_update, has_update = None, False
-    _total_post_count, _total_file_count = len(exist_ids), 0
+    _total_post_count, _total_file_count = len(exist_ids), max_file_id
 
     def _deploy(force=False):
         nonlocal _last_update, has_update, _total_post_count, _total_file_count
@@ -276,37 +300,13 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
 
         attachment_ids = []
         for attachment_item in attachments_info:
-            if '://' in attachment_item['name']:
-                filename = os.path.basename(attachment_item['path'])
-            else:
-                name_mimetype, _ = mimetypes.guess_type(attachment_item['name'])
-                url_mimetype, _ = mimetypes.guess_type(attachment_item['path'])
-                if (name_mimetype and url_mimetype and name_mimetype != url_mimetype) or \
-                        (not name_mimetype and not url_mimetype and
-                         os.path.splitext(attachment_item['name'])[-1].lower() !=
-                         os.path.splitext(attachment_item['path'])[-1].lower()):
-                    filename = attachment_item['name'] + os.path.splitext(attachment_item['path'])[-1]
-                else:
-                    filename = attachment_item['name']
-
-            mimetype, _ = mimetypes.guess_type(attachment_item['path'])
-            if mimetype and 'photoshop' in mimetype:
-                type_ = 'photoshop'
-            elif mimetype and mimetype.startswith('image/'):
-                type_ = 'image'
-            elif mimetype and mimetype.startswith('audio/'):
-                type_ = 'audio'
-            elif mimetype and mimetype.startswith('video/'):
-                type_ = 'video'
-            elif mimetype and mimetype.startswith('text/'):
-                type_ = 'text'
-            else:
-                try:
-                    get_archive_type(attachment_item['path'])
-                except ValueError:
-                    type_ = 'other'
-                else:
-                    type_ = 'archive'
+            filename = os.path.basename(attachment_item['name'])
+            name_type = _get_file_type(filename)
+            url_type = _get_file_type(attachment_item['path'])
+            if not name_type and url_type:
+                filename = filename + os.path.splitext(attachment_item['path'])[-1]
+            mimetype, _ = mimetypes.guess_type(filename)
+            type_ = _get_file_type(filename) or 'other'
 
             max_file_id += 1
             attachment_ids.append(max_file_id)
