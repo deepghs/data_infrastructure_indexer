@@ -14,6 +14,7 @@ from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_direct
 from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
+from waifuc.utils import srequest
 
 from .base import _ROOT
 
@@ -40,7 +41,7 @@ def _get_posts(service: str, uid: str, session: Optional[requests.Session] = Non
     offset = 0
     while True:
         logging.info(f'Searching {service} #{uid}, offset: {offset} ...')
-        resp = session.get(f'{_ROOT}/api/v1/{service}/user/{uid}', params={'o': str(offset)})
+        resp = srequest(session, 'GET', f'{_ROOT}/api/v1/{service}/user/{uid}', params={'o': str(offset)})
         if resp.status_code == 400:
             break
         resp.raise_for_status()
