@@ -197,10 +197,11 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         if file_info:
             attachments_info = [file_info, *attachments_info]
         embed_info = post_item.pop('embed')
+        post_id = post_item.pop('id')
 
         row = {
             'id': id_,
-            'post_id': post_item['id'],
+            'post_id': post_id,
             'user_id': f'{post_item["service"]}_{post_item["user"]}',
             'service': post_item['service'],
             'user': post_item['user'],
