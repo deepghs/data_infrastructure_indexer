@@ -41,7 +41,7 @@ def _parquet_safe(v):
 
 
 def _get_file_type(file_path) -> Optional[str]:
-    _, filename = os.path.splitext(file_path)
+    filename = os.path.basename(file_path)
     mimetype, _ = mimetypes.guess_type(filename)
     if mimetype and 'photoshop' in mimetype:
         type_ = 'photoshop'
