@@ -2,8 +2,10 @@ import json
 import math
 import os
 import time
+from typing import Optional
 
 import pandas as pd
+import requests
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
@@ -31,6 +33,21 @@ def _parquet_safe(v):
 
     else:
         return v
+
+
+def _get_posts(service: str, uid: str, session: Optional[requests.Session] = None):
+    session = session or get_requests_session()
+    offset = 0
+    while True:
+        logging.info(f'Searching {service} #{uid}, offset: {offset} ...')
+        resp = session.get(f'{_ROOT}/api/v1/{service}/user/{uid}', params={'o': str(offset)})
+        if resp.status_code == 400:
+            break
+        resp.raise_for_status()
+        yield from resp.json()
+        if not resp.json():
+            break
+        offset += len(resp.json())
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
@@ -81,19 +98,6 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
     df_creators = df_creators[df_creators['service'] != 'discord']
 
     session = get_requests_session()
-
-    def _get_posts(service: str, uid: str):
-        offset = 0
-        while True:
-            logging.info(f'Searching {service} #{uid}, offset: {offset} ...')
-            resp = session.get(f'{_ROOT}/api/v1/{service}/user/{uid}', params={'o': str(offset)})
-            if resp.status_code == 400:
-                break
-            resp.raise_for_status()
-            yield from resp.json()
-            if not resp.json():
-                break
-            offset += len(resp.json())
 
     _last_update, has_update = None, False
     _total_count = len(exist_ids)
@@ -167,7 +171,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         nonlocal has_update
         user_token = f'{user_item["service"]}_{user_item["id"]}'
         if user_token not in d_last_updates or d_last_updates[user_token] < user_item['updated']:
-            yield from _get_posts(service=user_item["service"], uid=user_item["id"])
+            yield from _get_posts(service=user_item["service"], uid=user_item["id"], session=session)
             d_last_updates[user_token] = user_item['updated']
             has_update = True
         else:
@@ -182,11 +186,12 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
     for post_item in _yield_from_all_users():
         if start_time + max_time_limit < time.time():
             break
-        if post_item['id'] in exist_ids:
-            logging.info(f'Post id {post_item["id"]!r} already exist, skipped.')
+        id_ = f'{post_item["service"]}/{post_item["user"]}/{post_item["id"]}'
+        if id_ in exist_ids:
+            logging.info(f'Post {id_!r} already exist, skipped.')
             continue
 
-        logging.info(f'Post {post_item["id"]!r} confirmed.')
+        logging.info(f'Post {id_!r} confirmed.')
         file_info = post_item.pop('file')
         attachments_info = post_item.pop('attachments')
         if file_info:
@@ -194,7 +199,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         embed_info = post_item.pop('embed')
 
         row = {
-            'id': post_item['id'],
+            'id': id_,
+            'post_id': post_item['id'],
             'user_id': f'{post_item["service"]}_{post_item["user"]}',
             'service': post_item['service'],
             'user': post_item['user'],
@@ -216,7 +222,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             'published': post_item['published'],
         }
         records.append(row)
-        exist_ids.add(row['id'])
+        exist_ids.add(id_)
         has_update = True
         _deploy(force=False)
 

@@ -27,3 +27,6 @@ ao3_api
 langdetect
 pyanimeinfo>=0.0.4
 pynacl
+tqdm
+hbutils
+requests
