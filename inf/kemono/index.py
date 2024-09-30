@@ -1,5 +1,6 @@
 import json
 import math
+import mimetypes
 import os
 import time
 from typing import Optional
@@ -9,6 +10,7 @@ import requests
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
+from hfutils.archive import get_archive_type
 from hfutils.cache import delete_detached_cache
 from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
 from hfutils.utils import get_requests_session, number_to_tag
@@ -17,6 +19,8 @@ from tqdm import tqdm
 from waifuc.utils import srequest
 
 from .base import _ROOT
+
+mimetypes.add_type('image/webp', '.webp')
 
 
 def _parquet_safe(v):
@@ -62,7 +66,7 @@ def _get_posts(service: str, uid: str, session: Optional[requests.Session] = Non
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
-         max_time_limit: float = 50 * 60, proxy_pool: Optional[str] = None):
+         max_time_limit: float = 50 * 60, max_posts_count: int = 2000000, proxy_pool: Optional[str] = None):
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
@@ -86,19 +90,39 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         meta_info = json.loads(hf_fs.read_text(f'datasets/{repository}/meta.json'))
         exist_ids = set(meta_info['exist_ids'])
         d_last_updates = meta_info['d_last_updates']
+        max_file_id = meta_info['max_file_id']
     else:
         exist_ids = set()
         d_last_updates = {}
+        max_file_id = 0
 
-    if hf_fs.exists(f'datasets/{repository}/posts.parquet'):
-        df_records = pd.read_parquet(hf_client.hf_hub_download(
+    if hf_fs.glob(f'datasets/{repository}/pages/*/posts.parquet'):
+        current_page_id = sorted([
+            int(os.path.basename(os.path.dirname(path)))
+            for path in hf_fs.glob(f'datasets/{repository}/pages/*/posts.parquet')
+        ])[-1]
+
+        df_posts = pd.read_parquet(hf_client.hf_hub_download(
             repo_id=repository,
             repo_type='dataset',
-            filename='posts.parquet',
+            filename=f'pages/{current_page_id}/posts.parquet',
         ))
-        records = df_records.to_dict('records')
+        df_attachments = pd.read_parquet(hf_client.hf_hub_download(
+            repo_id=repository,
+            repo_type='dataset',
+            filename=f'pages/{current_page_id}/attachments.parquet',
+        ))
+        if len(df_posts) >= max_posts_count:
+            current_page_id += 1
+            records = []
+            attachments = []
+        else:
+            records = df_posts.to_dict('records')
+            attachments = df_attachments.to_dict('records')
     else:
+        current_page_id = 1
         records = []
+        attachments = []
 
     df_creators = pd.read_parquet(hf_client.hf_hub_download(
         repo_id=repository,
@@ -117,26 +141,36 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         })
 
     _last_update, has_update = None, False
-    _total_count = len(exist_ids)
+    _total_post_count, _total_file_count = len(exist_ids), 0
 
     def _deploy(force=False):
-        nonlocal _last_update, has_update, _total_count
+        nonlocal _last_update, has_update, _total_post_count, _total_file_count
 
         if not has_update:
+            return
+        if len(attachments) < 1:
             return
         if not force and _last_update is not None and _last_update + deploy_span > time.time():
             return
 
         with TemporaryDirectory() as td:
-            parquet_file = os.path.join(td, f'posts.parquet')
+            parquet_file = os.path.join(td, 'pages', str(current_page_id), f'posts.parquet')
+            os.makedirs(os.path.dirname(parquet_file), exist_ok=True)
             df_records = pd.DataFrame(records)
             df_records = df_records.sort_values(by=['added'], ascending=[False])
             df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
+
+            attachments_parquet_file = os.path.join(td, 'pages', str(current_page_id), 'attachments.parquet')
+            os.makedirs(os.path.dirname(attachments_parquet_file), exist_ok=True)
+            df_attachments = pd.DataFrame(attachments)
+            df_attachments = df_attachments.sort_values(by=['id'], ascending=[False])
+            df_attachments.to_parquet(attachments_parquet_file, engine='pyarrow', index=False)
 
             with open(os.path.join(td, 'meta.json'), 'w') as f:
                 json.dump({
                     'exist_ids': sorted(exist_ids),
                     'd_last_updates': d_last_updates,
+                    'max_file_id': max_file_id,
                 }, f)
 
             with open(os.path.join(td, 'README.md'), 'w') as f:
@@ -173,17 +207,29 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print(df_records_shown.to_markdown(index=False), file=f)
                 print(f'', file=f)
 
+                print('## Files', file=f)
+                print(f'', file=f)
+                df_attachments_shown = df_attachments[:50][
+                    ['id', 'post_id', 'type', 'filename', 'mimetype', 'path']]
+                print(f'{plural_word(max_file_id, "file")} in total. '
+                      f'Only {plural_word(len(df_attachments_shown), "file")} shown.', file=f)
+                print(f'', file=f)
+                print(df_attachments_shown.to_markdown(index=False), file=f)
+                print(f'', file=f)
+
             limiter.try_acquire('hf upload limit')
             upload_directory_as_directory(
                 repo_id=repository,
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
-                message=f'Add {plural_word(len(exist_ids) - _total_count, "new record")} into index',
+                message=f'Add {plural_word(len(exist_ids) - _total_post_count, "new record")} '
+                        f'and {plural_word(max_file_id - _total_file_count, "new file")} into index',
             )
             has_update = False
             _last_update = time.time()
-            _total_count = len(exist_ids)
+            _total_post_count = len(exist_ids)
+            _total_file_count = max_file_id
 
     def _yield_posts(user_item: dict):
         nonlocal has_update
@@ -218,6 +264,52 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         post_id = post_item.pop('id')
         tags_info = post_item.pop('tags')
 
+        attachment_ids = []
+        for attachment_item in attachments_info:
+            if '://' in attachment_item['name']:
+                filename = os.path.basename(attachment_item['path'])
+            else:
+                name_mimetype, _ = mimetypes.guess_type(attachment_item['name'])
+                url_mimetype, _ = mimetypes.guess_type(attachment_item['path'])
+                if (name_mimetype and url_mimetype and name_mimetype != url_mimetype) or \
+                        (not name_mimetype and not url_mimetype and
+                         os.path.splitext(attachment_item['name'])[-1].lower() !=
+                         os.path.splitext(attachment_item['path'])[-1].lower()):
+                    filename = attachment_item['name'] + os.path.splitext(attachment_item['path'])[-1]
+                else:
+                    filename = attachment_item['name']
+
+            mimetype, _ = mimetypes.guess_type(attachment_item['path'])
+            if 'photoshop' in mimetype:
+                type_ = 'photoshop'
+            elif mimetype and mimetype.startswith('image/'):
+                type_ = 'image'
+            elif mimetype and mimetype.startswith('audio/'):
+                type_ = 'audio'
+            elif mimetype and mimetype.startswith('video/'):
+                type_ = 'video'
+            elif mimetype and mimetype.startswith('text/'):
+                type_ = 'text'
+            else:
+                try:
+                    get_archive_type(attachment_item['path'])
+                except ValueError:
+                    type_ = 'other'
+                else:
+                    type_ = 'archive'
+
+            max_file_id += 1
+            attachment_ids.append(max_file_id)
+            attachments.append({
+                'id': max_file_id,
+                'post_id': id_,
+                'type': type_,
+                'filename': filename,
+                'mimetype': mimetype,
+                'name': attachment_item['name'],
+                'path': attachment_item['path'],
+            })
+
         row = {
             'id': id_,
             'post_id': post_id,
@@ -232,7 +324,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             'captions': post_item['captions'],
 
             'embed': _parquet_safe(embed_info),
-            'attachments': attachments_info,
+            'attachment_ids': attachment_ids,
             'file_count': len(attachments_info),
             'poll': post_item['poll'],
 
@@ -257,4 +349,5 @@ if __name__ == '__main__':
         deploy_span=2.5 * 60,
         max_time_limit=5.5 * 60 * 60,
         proxy_pool=os.environ['PP_AO3'],
+        max_posts_count=2000000,
     )
