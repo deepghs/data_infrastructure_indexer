@@ -51,7 +51,7 @@ def _get_posts(service: str, uid: str, session: Optional[requests.Session] = Non
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
-         max_time_limit: float = 50 * 60):
+         max_time_limit: float = 50 * 60, proxy_pool: Optional[str] = None):
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
@@ -98,6 +98,12 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
     df_creators = df_creators[df_creators['service'] != 'discord']
 
     session = get_requests_session()
+    if proxy_pool:
+        logging.info(f'Proxy pool enabled: {proxy_pool}')
+        session.proxies.update({
+            'http': proxy_pool,
+            'https': proxy_pool,
+        })
 
     _last_update, has_update = None, False
     _total_count = len(exist_ids)
@@ -148,7 +154,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 print('## Records', file=f)
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
-                    ['id', 'service', 'user', "post_id", 'title', 'tags', 'file_count', 'published', 'added']]
+                    ['id', 'service', 'user', "post_id", 'title', 'tags',
+                     'page_url', 'file_count', 'published', 'added']]
                 print(f'{plural_word(len(exist_ids), "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
@@ -205,6 +212,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             'user_id': f'{post_item["service"]}_{post_item["user"]}',
             'service': post_item['service'],
             'user': post_item['user'],
+            'page_url': f'https://kemono.su/{post_item["service"]}/user/{post_item["user"]}/post/{post_id}',
 
             'title': post_item['title'],
             'tags': post_item['tags'],
@@ -236,4 +244,5 @@ if __name__ == '__main__':
         repository=os.environ['REMOTE_REPOSITORY_KMN'],
         deploy_span=5 * 60,
         max_time_limit=5.5 * 60 * 60,
+        proxy_pool=os.environ['PP_AO3'],
     )
