@@ -88,8 +88,11 @@ def _get_posts(service: str, uid: str, session: Optional[requests.Session] = Non
             params={'o': str(offset)},
             raise_for_status=False,
         )
-        if resp.status_code == 400:
+        if resp.status_code in {400, 404}:
             break
+        else:
+            resp.raise_for_status()
+
         try:
             lst = resp.json()
         except requests.exceptions.JSONDecodeError as err:
