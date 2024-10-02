@@ -377,6 +377,7 @@ if __name__ == '__main__':
         repository=os.environ['REMOTE_REPOSITORY_KMN'],
         deploy_span=5 * 60,
         max_time_limit=0.45 * 60 * 60,
-        proxy_pool=os.environ['PP_AO3'],
+        # proxy_pool=os.environ['PP_AO3'],
+        proxy_pool=None,
         max_posts_count=350000,
     )
