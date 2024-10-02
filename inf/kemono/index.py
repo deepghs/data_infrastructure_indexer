@@ -40,6 +40,20 @@ def _parquet_safe(v):
         return v
 
 
+def _find_file_dicts(f):
+    if isinstance(f, dict):
+        if set(f.keys()) & {'name', 'path'} == {'name', 'path'}:
+            yield f
+        else:
+            for key, value in f.items():
+                yield from _find_file_dicts(value)
+    elif isinstance(f, (tuple, list)):
+        for item in f:
+            yield from _find_file_dicts(item)
+    else:
+        return
+
+
 def _get_file_type(file_path) -> Optional[str]:
     filename = os.path.basename(file_path)
     mimetype, _ = mimetypes.guess_type(filename)
@@ -293,7 +307,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         file_info = post_item.pop('file')
         attachments_info = post_item.pop('attachments')
         if file_info:
-            attachments_info = [file_info, *attachments_info]
+            attachments_info = [*_find_file_dicts(file_info), *attachments_info]
         embed_info = post_item.pop('embed')
         post_id = post_item.pop('id')
         tags_info = post_item.pop('tags')
