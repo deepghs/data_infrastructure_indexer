@@ -68,6 +68,8 @@ jobs:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
+          DANBOORU_USERNAME: ${{ secrets.DANBOORU_USERNAME }}
+          DANBOORU_APITOKEN: ${{ secrets.DANBOORU_APITOKEN }}
         shell: bash
         run: |
           python -m inf.danbooru.index_n
