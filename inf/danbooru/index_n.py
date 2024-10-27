@@ -153,7 +153,8 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             for pitem in resp.json():
                 if pitem['id'] not in exist_ids:
                     yield pitem
-                    has_new_items = True
+                    if pitem.get('file_url'):
+                        has_new_items = True
                 if not min_image_id or pitem['id'] < min_image_id:
                     min_image_id = pitem['id']
 
