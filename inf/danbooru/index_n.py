@@ -166,11 +166,16 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             if min_image_id and min_image_id < image_id_lower_bound:
                 return
 
+            page += 1
+
     for item in _iter_items():
         if start_time + max_time_limit < time.time():
             break
         if item['id'] in exist_ids:
             logging.info(f'Post {item["id"]!r} already crawled, skipped.')
+            continue
+        if not item.get('file_url'):
+            logging.info(f'Empty url post {item["id"]!r}, maybe you need a golden account to scrape that, skipped.')
             continue
 
         logging.info(f'Post {item["id"]!r} confirmed!')
