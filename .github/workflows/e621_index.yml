@@ -68,6 +68,8 @@ jobs:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_E621: ${{ secrets.REMOTE_REPOSITORY_E621 }}
+          E621_USERNAME: ${{ secrets.E621_USERNAME }}
+          E621_APITOKEN: ${{ secrets.E621_APITOKEN }}
         shell: bash
         run: |
           python -m inf.e621.index

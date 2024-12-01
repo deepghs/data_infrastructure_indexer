@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import mimetypes
@@ -51,9 +52,10 @@ def _parquet_safe(v):
 
 
 def _get_posts(session: Optional[requests.Session] = None,
-               before_id: Optional[int] = None, after_id: Optional[int] = None) -> List[dict]:
+               before_id: Optional[int] = None, after_id: Optional[int] = None,
+               limit: int = 1000) -> List[dict]:
     session = session or get_requests_session()
-    params = {'limit': '1000'}
+    params = {'limit': str(limit)}
     if before_id is not None:
         params['page'] = f'b{before_id}'
     elif after_id is not None:
@@ -65,13 +67,15 @@ def _get_posts(session: Optional[requests.Session] = None,
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
-         max_time_limit: float = 50 * 60, max_part_rows: int = 1000000):
+         max_time_limit: float = 50 * 60, max_part_rows: int = 1000000,
+         site_username: Optional[str] = None, site_apikey: Optional[str] = None,
+         sync_mode: bool = True):
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
     limiter = Limiter(rate, max_delay=1 << 32)
-    hf_client = get_hf_client()
-    hf_fs = get_hf_fs()
+    hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN'])
+    hf_fs = get_hf_fs(hf_token=os.environ['HF_TOKEN'])
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
         hf_client.update_repo_visibility(repo_id=repository, repo_type='dataset', private=True)
@@ -83,6 +87,28 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             f'datasets/{repository}/.gitattributes',
             os.linesep.join(attr_lines),
         )
+
+    while True:
+        session = get_requests_session()
+        if site_username and site_apikey:
+            logging.info(f'Initializing session with username {site_username!r} and api_key {site_apikey!r} ...')
+            auth_string = f"{site_username}:{site_apikey}"
+            auth_bytes = auth_string.encode('utf-8')
+            base64_auth = base64.b64encode(auth_bytes).decode('utf-8')
+            session.headers.update({
+                "Authorization": f"Basic {base64_auth}"
+            })
+        else:
+            logging.info('Initializing session ...')
+        logging.info(f'Try user agent: {session.headers["User-Agent"]!r} ...')
+        try:
+            _ = _get_posts(session)
+        except (requests.RequestException, httpx.HTTPStatusError) as err:
+            if err.response.status_code == 403:
+                continue
+            raise
+        else:
+            break
 
     if hf_fs.glob(f'datasets/{repository}/e621-*.parquet'):
         last_page_id = sorted([
@@ -104,7 +130,11 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         last_page_id = 1
         records = []
 
-    if hf_fs.exists(f'datasets/{repository}/meta.json'):
+    if hf_client.file_exists(
+            repo_id=repository,
+            repo_type='dataset',
+            filename='meta.json',
+    ):
         meta_info = json.loads(hf_fs.read_text(f'datasets/{repository}/meta.json'))
         max_id = meta_info['max_id']
         exist_ids = set(meta_info['exist_ids'])
@@ -119,7 +149,11 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
     ))
     d_origin_tags = {(item['category'], item['name']): item for item in df_origin_tags.to_dict('records')}
 
-    if hf_fs.exists(f'datasets/{repository}/tags.parquet'):
+    if hf_client.file_exists(
+            repo_id=repository,
+            repo_type='dataset',
+            filename='tags.parquet',
+    ):
         df_tags = pd.read_parquet(hf_client.hf_hub_download(
             repo_id=repository,
             repo_type='dataset',
@@ -128,18 +162,6 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         d_tags = {(item['category'], item['name']): item for item in df_tags.to_dict('records')}
     else:
         d_tags = {}
-
-    while True:
-        session = get_requests_session()
-        logging.info(f'Try user agent: {session.headers["User-Agent"]!r} ...')
-        try:
-            _ = _get_posts(session)
-        except (requests.RequestException, httpx.HTTPStatusError) as err:
-            if err.response.status_code == 403:
-                continue
-            raise
-        else:
-            break
 
     _last_update, has_update = None, False
     _total_count = len(exist_ids)
@@ -225,6 +247,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                 local_directory=td,
                 path_in_repo='.',
                 message=f'Add {plural_word(len(exist_ids) - _total_count, "new record")} into index',
+                hf_token=os.environ['HF_TOKEN'],
             )
             has_update = False
             _last_update = time.time()
@@ -249,14 +272,42 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             if not has_new_items:
                 break
 
+    def _iter_down():
+        min_id = None
+        no_new_count = 0
+        while True:
+            if start_time + max_time_limit < time.time():
+                break
+            has_new_item, has_item = False, False
+            for item in _get_posts(session=session, before_id=min_id):
+                if item['id'] not in exist_ids:
+                    yield item
+                    has_new_item = True
+                has_item = True
+                if min_id is None or item['id'] < min_id:
+                    min_id = item['id']
+
+            if not has_item:
+                break
+            if not has_new_item:
+                no_new_count += 1
+            else:
+                no_new_count = 0
+            if sync_mode and no_new_count >= 10:
+                break
+
     def _iter_posts():
-        yield from _iter_up()
+        yield from _iter_down()
+        # yield from _iter_up()
 
     for post in _iter_posts():
         if start_time + max_time_limit < time.time():
             break
         if post['id'] in exist_ids:
             logging.warning(f'Post {post["id"]!r} already exist, skipped.')
+            continue
+        if not post['file'].get('url'):
+            logging.warning(f'Post {post["id"]!r} don\'t have an URL, maybe you need a higher privileged account.')
             continue
 
         logging.info(f'Post {post["id"]!r} confirmed.')
@@ -349,4 +400,7 @@ if __name__ == '__main__':
         deploy_span=5 * 60,
         max_time_limit=5.5 * 60 * 60,
         max_part_rows=1000000,
+        site_username=os.environ.get('E621_USERNAME'),
+        site_apikey=os.environ.get('E621_APITOKEN'),
+        sync_mode=True,
     )
