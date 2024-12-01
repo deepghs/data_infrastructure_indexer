@@ -4,8 +4,8 @@ name: E621 Index
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '0 14 * * 0,3'
+#  schedule:
+#    - cron: '0 14 * * 0,3'
 
 jobs:
   unittest:
