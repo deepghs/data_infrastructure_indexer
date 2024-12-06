@@ -49,14 +49,12 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             repo_type='dataset',
             filename='records.parquet'
         )).replace(np.NaN, None)
-        records = df_records.to_dict('records')
-        exist_ids = set(df_records['id'])
+        d_records = {item['id']: item for item in df_records.to_dict('records')}
     else:
-        records = []
-        exist_ids = set()
+        d_records = {}
 
     _last_update, has_update = None, False
-    _total_count = len(records)
+    _total_count = len(d_records)
 
     def _deploy(force=False):
         nonlocal _last_update, has_update, _total_count
@@ -69,7 +67,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
         with TemporaryDirectory() as td:
             table_parquet_file = os.path.join(td, 'records.parquet')
             os.makedirs(os.path.dirname(table_parquet_file), exist_ok=True)
-            df_records = pd.DataFrame(records)
+            df_records = pd.DataFrame(list(d_records.values()))
             df_records = df_records.sort_values(by=['id'], ascending=[False])
             df_records.to_parquet(table_parquet_file, engine='pyarrow', index=False)
 
@@ -100,7 +98,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 print(f'', file=f)
                 df_records_shown = df_records[:50][
                     ['id', 'image_width', 'image_height', 'rating', 'mimetype', 'file_size', 'file_url']]
-                print(f'{plural_word(len(exist_ids), "record")} in total. '
+                print(f'{plural_word(len(df_records), "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
                 print(df_records_shown.to_markdown(index=False), file=f)
@@ -151,7 +149,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             }, auth=source.auth)
             has_new_items = False
             for pitem in resp.json():
-                if pitem['id'] not in exist_ids:
+                if pitem['id'] not in d_records or d_records[pitem['id']]['file_url'] != pitem.get('file_url'):
                     yield pitem
                     if pitem.get('file_url'):
                         has_new_items = True
@@ -162,7 +160,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 no_item_cnt = 0
             else:
                 no_item_cnt = no_item_cnt + 1
-            if sync_mode and no_item_cnt >= 10:
+            if sync_mode and no_item_cnt >= 100:
                 return
             if min_image_id and min_image_id < image_id_lower_bound:
                 return
@@ -172,21 +170,22 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
     for item in _iter_items():
         if start_time + max_time_limit < time.time():
             break
-        if item['id'] in exist_ids:
-            logging.info(f'Post {item["id"]!r} already crawled, skipped.')
-            continue
+        # if item['id'] in exist_ids:
+        #     logging.info(f'Post {item["id"]!r} already crawled, skipped.')
+        #     continue
         if not item.get('file_url'):
             logging.info(f'Empty url post {item["id"]!r}, maybe you need a golden account to scrape that, skipped.')
             continue
 
         logging.info(f'Post {item["id"]!r} confirmed!')
+        if item['id'] in d_records:
+            logging.info(f'Post {item["id"]!r} already exist, but has file_url changed.')
         del item['media_asset']
         if item.get('file_url'):
             item['mimetype'], _ = mimetypes.guess_type(item['file_url'])
         else:
             item['mimetype'] = None
-        records.append(item)
-        exist_ids.add(item['id'])
+        d_records[item['id']] = item
         has_update = True
         _deploy()
 
