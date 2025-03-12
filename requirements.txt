@@ -16,7 +16,7 @@ lxml<5
 hfutils[rar,7z]>=0.3.8
 dghs-imgutils>=0.5.0
 pyquery
-markdownify
+markdownify<1
 xmltodict
 tzlocal
 pixivpy3>=3.7.5

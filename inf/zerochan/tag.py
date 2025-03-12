@@ -1,9 +1,9 @@
-import logging
 import re
 from urllib.parse import quote_plus, urljoin, unquote_plus
 
 import httpx
 import requests.exceptions
+from ditk import logging
 from hbutils.system import urlsplit
 from markdownify import MarkdownConverter, chomp
 from pyquery import PyQuery as pq
@@ -197,3 +197,8 @@ def _get_tag_info(tag, session=None):
         # 'children_tags': children_tags,
         # 'children_tags_all': children_all,
     }
+
+
+if __name__ == '__main__':
+    logging.try_init_root(logging.INFO)
+    print(_get_tag_info('Kafei'))
