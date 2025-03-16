@@ -67,7 +67,7 @@ jobs:
         env:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          REMOTE_REPOSITORY_KN: ${{ secrets.REMOTE_REPOSITORY_RX }}
+          REMOTE_REPOSITORY_RX: ${{ secrets.REMOTE_REPOSITORY_RX }}
         shell: bash
         run: |
           python -m inf.rule34.index
