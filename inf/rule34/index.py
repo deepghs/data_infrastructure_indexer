@@ -39,8 +39,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
     limiter = Limiter(rate, max_delay=1 << 32)
 
-    hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN_X'])
-    hf_fs = get_hf_fs(hf_token=os.environ['HF_TOKEN_X'])
+    hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN'])
+    hf_fs = get_hf_fs(hf_token=os.environ['HF_TOKEN'])
 
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
@@ -184,7 +184,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
-                hf_token=os.environ['HF_TOKEN_X'],
+                hf_token=os.environ['HF_TOKEN'],
                 message=f'Add {plural_word(len(exist_ids) - last_image_count, "new record")}',
             )
             has_update = False
