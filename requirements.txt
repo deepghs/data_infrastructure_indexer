@@ -30,3 +30,5 @@ pynacl
 tqdm
 hbutils
 requests
+numpy
+natsort
