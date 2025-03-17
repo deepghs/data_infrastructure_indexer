@@ -24,8 +24,7 @@ def get_year_and_quarter(time=None):
     utc_time = time.astimezone(timezone.utc)
     year = utc_time.year
     month = utc_time.month
-    quarter = (month - 1) // 3 + 1
-    return f'{year}_q{quarter}'
+    return f'{year}{month:02d}'
 
 
 def sync(repository: str, site_username: Optional[str] = None, site_apikey: Optional[str] = None, ):
