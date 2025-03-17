@@ -1,7 +1,9 @@
+import calendar
 import datetime
 import json
 import os
 import time
+from datetime import datetime
 from datetime import timezone
 from typing import Optional
 
@@ -13,18 +15,63 @@ from hbutils.system import TemporaryDirectory
 from hfutils.cache import delete_detached_cache
 from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
 from hfutils.utils import number_to_tag
+from huggingface_hub import hf_hub_url
 from tqdm import tqdm
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
 
 
+def generate_calendar_markdown(f, minx, url_function, last_month_count: int = 12):
+    today = datetime.now()
+    current_year = today.year
+    current_month = today.month
+    current_day = today.day
+
+    weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    min_year, min_month = minx
+
+    for i in range(0, last_month_count):
+        month = current_month - i
+        year = current_year
+        while month <= 0:
+            month += 12
+            year -= 1
+
+        if (year, month) < (min_year, min_month):
+            continue
+
+        print(f"## {year}-{month:02d}", file=f)
+        print(f'', file=f)
+        cal = calendar.monthcalendar(year, month)
+
+        df = pd.DataFrame(cal, columns=weekday_names)
+        for row in range(len(df)):
+            for col in range(7):
+                day = df.iloc[row, col]
+                if day == 0:
+                    df.iloc[row, col] = ""
+                else:
+                    if year == current_year and month == current_month and day > current_day:
+                        df.iloc[row, col] = ""
+                    else:
+                        url = url_function((year, month, day))
+                        if url:
+                            df.iloc[row, col] = f"[{day}]({url})"
+                        else:
+                            df.iloc[row, col] = str(day)
+
+        print(df.to_markdown(index=False), file=f)
+        print(f'', file=f)
+
+
 def get_year_and_quarter(time=None):
     if time is None:
-        time = datetime.datetime.now()
+        time = datetime.now()
     utc_time = time.astimezone(timezone.utc)
     year = utc_time.year
     month = utc_time.month
-    return f'{year}{month:02d}'
+    day = utc_time.day
+    return f'{year}{month:02d}', f'{year}{month:02d}{day:02d}', (year, month, day)
 
 
 def sync(repository: str, site_username: Optional[str] = None, site_apikey: Optional[str] = None, ):
@@ -53,34 +100,20 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
     source._prune_session()
     session = source.session
 
-    yq = get_year_and_quarter()
-    logging.info(f'Current mark: {yq!r}')
-
     if hf_client.file_exists(
             repo_id=repository,
             repo_type='dataset',
             filename='meta.json',
     ):
         meta_info = json.loads(hf_fs.read_text(f'datasets/{repository}/meta.json'))
-        max_batch_id = int(meta_info['max_batch_id'])
+        exist_days = {tuple(x) for x in meta_info['exist_days']}
+        exist_months = {(x[0], x[1]) for x in meta_info['exist_days']}
     else:
-        max_batch_id = 0
-    max_batch_id += 1
-    logging.info(f'Current batch id: {max_batch_id!r}.')
+        exist_days = set()
+        exist_months = set()
 
-    if hf_client.file_exists(
-            repo_id=repository,
-            repo_type='dataset',
-            filename=f'history/{yq}.parquet',
-    ):
-        df_records = pd.read_parquet(hf_client.hf_hub_download(
-            repo_id=repository,
-            repo_type='dataset',
-            filename=f'history/{yq}.parquet',
-        ))
-        records = df_records.to_dict('records')
-    else:
-        records = []
+    ym, yd, (year, month, day) = get_year_and_quarter()
+    logging.info(f'Current mark: {ym!r} - {yd!r} - {(year, month, day)!r}')
 
     def _get_ch_tags(pid: int):
         logging.info(f'Accessing tags on page #{pid!r} ...')
@@ -127,7 +160,6 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
                 'consequents': [x['antecedent_name'] for x in item['consequent_implications']],
                 'created_at': dateparser.parse(item['created_at']).timestamp(),
                 'updated_at': dateparser.parse(item['updated_at']).timestamp(),
-                'batch_id': max_batch_id,
                 'scraped_at': call_time,
             }
 
@@ -136,19 +168,26 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
     logging.info(f'Current scraping result:\n{df_current}')
 
     with TemporaryDirectory() as upload_dir:
-        last_tags_file = os.path.join(upload_dir, 'tags.parquet')
+        last_tags_file = os.path.join(upload_dir, 'current.parquet')
         df_current.to_parquet(last_tags_file, index=False)
 
-        history_file = os.path.join(upload_dir, 'history', f'{yq}.parquet')
+        history_file = os.path.join(upload_dir, 'history', ym, f'{yd}.parquet')
         os.makedirs(os.path.dirname(history_file), exist_ok=True)
-        records.extend(df_current.to_dict('records'))
-        df_records = pd.DataFrame(records)
-        df_records = df_records.sort_values(by=['batch_id', 'id'], ascending=[False, False])
-        df_records.to_parquet(history_file, index=False)
+        df_current.to_parquet(history_file, index=False)
 
+        exist_days.add((year, month, day))
+        exist_months.add((year, month))
+        min_year, min_month = min(exist_months)
         with open(os.path.join(upload_dir, 'meta.json'), 'w') as f:
             json.dump({
-                'max_batch_id': max_batch_id,
+                'exist_days': sorted(exist_days),
+                'last_date': {
+                    'year': year,
+                    'month': month,
+                    'day': day,
+                },
+                'ym': ym,
+                'yd': yd,
             }, f)
 
         with open(os.path.join(upload_dir, 'README.md'), 'w') as f:
@@ -179,14 +218,31 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
             print(f'You can analysis their post count history with these databases.', file=f)
             print(f'', file=f)
 
+            def _get_url(d):
+                (year, month, day) = d
+                if (year, month, day) in exist_days:
+                    return hf_hub_url(
+                        repo_id=repository,
+                        repo_type='dataset',
+                        filename=f'history/{year}{month:02d}/{year}{month:02d}{day:02d}.parquet',
+                    )
+                else:
+                    return None
+
+            generate_calendar_markdown(
+                f=f,
+                minx=(min_year, min_month),
+                url_function=_get_url,
+                last_month_count=12,
+            )
+
         upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=upload_dir,
             path_in_repo='.',
-            message=f'Add Batch #{max_batch_id!r}, '
-                    f'with {plural_word(len(df_current), "tag")} in total, '
-                    f'at quarter {yq!r}',
+            message=f'Add #{yd}, with {plural_word(len(df_current), "tag")} in total, '
+                    f'at month {ym!r}',
             hf_token=os.environ['HF_TOKEN'],
         )
 
