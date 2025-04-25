@@ -24,6 +24,12 @@ def _get_session_for_zerochan(auth: Optional[Tuple[str, str]] = None) -> request
         username=username,
         password=password
     )
+    source.session.headers.update({
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'none',
+        'sec-fetch-user': '?1',
+    })
     if auth:
         source._auth()
 
