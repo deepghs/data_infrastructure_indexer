@@ -30,6 +30,7 @@ def _get_session_for_zerochan(auth: Optional[Tuple[str, str]] = None) -> request
         'sec-fetch-site': 'none',
         'sec-fetch-user': '?1',
     })
+    source._check_session()
     if auth:
         source._auth()
 
