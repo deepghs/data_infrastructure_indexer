@@ -244,7 +244,7 @@ def sync(repository: str, proxy_pool: Optional[str] = None, access_interval: Opt
         )
 
     session = _get_session(proxy_pool=proxy_pool)
-    df_tags = _get_all_tags(session=session)
+    df_tags = _get_all_tags(session=session, limiter=limiter, api_key=api_key, user_id=user_id)
     df_tag_aliases = _get_all_tag_aliases(session=session)
 
     with TemporaryDirectory() as td:
