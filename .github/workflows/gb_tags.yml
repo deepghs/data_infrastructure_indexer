@@ -69,6 +69,8 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_GB: ${{ secrets.REMOTE_REPOSITORY_GB }}
           PP_GB: ${{ secrets.PP_GB }}
+          GELBOORU_USER_ID: ${{ secrets.GELBOORU_USER_ID }}
+          GELBOORU_API_KEY: ${{ secrets.GELBOORU_API_KEY }}
         shell: bash
         run: |
           python -m inf.gelbooru.tags
