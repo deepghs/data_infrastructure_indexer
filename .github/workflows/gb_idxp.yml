@@ -4,8 +4,8 @@ name: Gelbooru Index
 on:
   #  push:
   workflow_dispatch:
-#  schedule:
-#    - cron: '0 */12 * * *'
+  schedule:
+    - cron: '45 6 * * *'
 
 jobs:
   unittest:
