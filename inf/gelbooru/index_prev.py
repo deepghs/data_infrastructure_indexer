@@ -17,6 +17,7 @@ from hbutils.collection import unique, nested_map
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hbutils.testing import disable_output
+from hfutils.cache import delete_detached_cache
 from hfutils.operate import upload_directory_as_directory, download_archive_as_directory, get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from natsort import natsorted
@@ -111,6 +112,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
          deploy_span: float = 5 * 60, sync_mode: bool = False, no_recent: float = 60 * 60 * 24 * 15,
          max_part_rows: int = 2500000, sync_from_archives: bool = True,
          user_id: Optional[str] = None, api_key: Optional[str] = None, access_interval: Optional[float] = None):
+    delete_detached_cache()
     start_time = time.time()
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
