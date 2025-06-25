@@ -1,5 +1,6 @@
 import html
 import logging
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from hbutils.system import TemporaryDirectory, urlsplit
 from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
 from hfutils.utils import get_requests_session
 from pyquery import PyQuery as pq
+from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
 
@@ -32,7 +34,9 @@ def _get_session(proxy_pool: Optional[str] = None):
     return session
 
 
-def _get_tags_by_page(p: Optional[int] = None, name: Optional[str] = None, max_tries: int = 5, session=None):
+def _get_tags_by_page(p: Optional[int] = None, name: Optional[str] = None, max_tries: int = 5,
+                      session=None, user_id: Optional[str] = None, api_key: Optional[str] = None,
+                      limiter: Optional[Limiter] = None):
     session = session or _get_session()
     if p is not None:
         logging.info(f'Getting page {p} for tags ...')
@@ -54,6 +58,12 @@ def _get_tags_by_page(p: Optional[int] = None, name: Optional[str] = None, max_t
                 params['pid'] = str(p)
             if name is not None:
                 params['name'] = name
+            if user_id:
+                params['user_id'] = user_id
+            if api_key:
+                params['api_key'] = api_key
+            if limiter is not None:
+                limiter.try_acquire('API access')
             resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
         except requests.exceptions.RequestException as err:
             if err.response.status_code == 403:
@@ -81,15 +91,16 @@ def _get_tags_by_page(p: Optional[int] = None, name: Optional[str] = None, max_t
     return items
 
 
-def _get_all_tags(session=None):
+def _get_all_tags(session=None, user_id: Optional[str] = None, api_key: Optional[str] = None,
+                  limiter: Optional[Limiter] = None):
     session = session or _get_session()
     l, r = 1, 2
-    while _get_tags_by_page(p=r, session=session):
+    while _get_tags_by_page(p=r, session=session, user_id=user_id, api_key=api_key, limiter=limiter):
         l, r = l << 1, r << 1
 
     while l < r:
         m = (l + r + 1) // 2
-        if _get_tags_by_page(p=m, session=session):
+        if _get_tags_by_page(p=m, session=session, user_id=user_id, api_key=api_key, limiter=limiter):
             l = m
         else:
             r = m - 1
@@ -104,7 +115,7 @@ def _get_all_tags(session=None):
 
     def _scrap_page(pid):
         try:
-            res = _get_tags_by_page(p=pid, session=session)
+            res = _get_tags_by_page(p=pid, session=session, user_id=user_id, api_key=api_key, limiter=limiter)
             if not res:
                 return
             for item in res:
@@ -212,9 +223,15 @@ def _get_all_tag_aliases(session=None):
     return df
 
 
-def sync(repository: str, proxy_pool: Optional[str] = None):
+def sync(repository: str, proxy_pool: Optional[str] = None, access_interval: Optional[float] = None,
+         user_id: Optional[str] = None, api_key: Optional[str] = None):
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
+    if access_interval is not None:
+        rate = Rate(1, int(math.ceil(Duration.SECOND * access_interval)))
+        limiter = Limiter(rate, max_delay=1 << 32)
+    else:
+        limiter = None
 
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
@@ -247,6 +264,14 @@ def sync(repository: str, proxy_pool: Optional[str] = None):
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
+    # pprint(_get_tag_aliases_by_page(1))
+    # pprint(_get_tags_by_page(
+    #     p=1,
+    #     user_id=os.environ["GELBOORU_USER_ID"],
+    #     api_key=os.environ["GELBOORU_API_KEY"],
+    # ))
     sync(
         repository=os.environ['REMOTE_REPOSITORY_GB'],
+        user_id=os.environ["GELBOORU_USER_ID"],
+        api_key=os.environ["GELBOORU_API_KEY"],
     )

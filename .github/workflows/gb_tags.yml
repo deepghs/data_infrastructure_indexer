@@ -4,8 +4,8 @@ name: Gelbooru Tags
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '45 0 * * 1,4'
+#  schedule:
+#    - cron: '45 0 * * 1,4'
 
 jobs:
   unittest:
