@@ -436,7 +436,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             if tag in d_origin_tags:
                 d_tags[tag].update(d_origin_tags[tag])
             if d_tags[tag]['id'] < 0:
-                tags_info = _get_tags_by_page(name=tag, session=session)
+                tags_info = _get_tags_by_page(name=tag, session=session,
+                                              limiter=r_limiter, user_id=user_id, api_key=api_key)
                 if tags_info:
                     d_tags[tag].update(tags_info[0])
 
