@@ -49,7 +49,9 @@ _INDEX_REPO = 'narugo/gelbooru_images_fornarugo_index'
 
 
 def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
-                       tags: List[str] = None, max_tries: int = 5, session=None):
+                       tags: List[str] = None, max_tries: int = 5, session=None,
+                       user_id: Optional[str] = None, api_key: Optional[str] = None,
+                       limiter: Optional[Limiter] = None):
     session = session or _get_session()
     if tags is not None:
         if p is not None:
@@ -78,6 +80,12 @@ def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
                 params['id'] = str(id_)
             if tags:
                 params['tags'] = ' '.join(tags)
+            if user_id:
+                params['user_id'] = user_id
+            if api_key:
+                params['api_key'] = api_key
+            if limiter is not None:
+                limiter.try_acquire('API access')
             resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
         except requests.exceptions.RequestException as err:
             if err.response.status_code == 403:
@@ -101,12 +109,19 @@ def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
 
 def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: float = 30,
          deploy_span: float = 5 * 60, sync_mode: bool = False, no_recent: float = 60 * 60 * 24 * 15,
-         max_part_rows: int = 2500000, sync_from_archives: bool = True):
+         max_part_rows: int = 2500000, sync_from_archives: bool = True,
+         user_id: Optional[str] = None, api_key: Optional[str] = None, access_interval: Optional[float] = None):
     start_time = time.time()
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
     limiter = Limiter(rate, max_delay=1 << 32)
+
+    if access_interval is not None:
+        r_rate = Rate(1, int(math.ceil(Duration.SECOND * access_interval)))
+        r_limiter = Limiter(r_rate, max_delay=1 << 32)
+    else:
+        r_limiter = None
 
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
@@ -321,25 +336,34 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         nonlocal min_newest_id
         should_quit = False
         no_item_cnt = 0
-        for pid in range(0, 201):
-            has_item = False
-            for item in _get_posts_by_page(p=pid, session=session):
-                if item['id'] not in exist_ids:
-                    yield item
-                    has_item = True
-
-                if min_newest_id is None or item['id'] < min_newest_id:
-                    min_newest_id = item['id']
-                if item['id'] < max_blind_id:
-                    should_quit = True
-                    break
-
-            if has_item:
-                no_item_cnt = 0
+        while True:
+            if min_newest_id is not None:
+                extra_tags = [f'id:<{min_newest_id}']
             else:
-                no_item_cnt += 1
-                if no_item_cnt >= 10:
-                    should_quit = True
+                extra_tags = []
+            for pid in range(0, 201):
+                has_item = False
+                for item in _get_posts_by_page(p=pid, tags=extra_tags, session=session,
+                                               limiter=r_limiter, user_id=user_id, api_key=api_key):
+                    if item['id'] not in exist_ids:
+                        yield item
+                        has_item = True
+
+                    if min_newest_id is None or item['id'] < min_newest_id:
+                        min_newest_id = item['id']
+                    if item['id'] < max_blind_id:
+                        should_quit = True
+                        break
+
+                if has_item:
+                    no_item_cnt = 0
+                else:
+                    no_item_cnt += 1
+                    if no_item_cnt >= 10:
+                        should_quit = True
+
+                if should_quit:
+                    break
 
             if should_quit:
                 break
@@ -350,7 +374,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         i = max_blind_id
         while min_newest_id is None or i < min_newest_id:
             if i not in exist_ids:
-                yield from _get_posts_by_page(id_=i, session=session)
+                yield from _get_posts_by_page(id_=i, session=session,
+                                              limiter=r_limiter, user_id=user_id, api_key=api_key)
 
             i += 1
             max_blind_id = i
@@ -359,7 +384,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
     if sync_mode:
         source = chain(
             _yield_from_newest(),
-            _yield_from_blind(),
+            # _yield_from_blind(),
         )
     else:
         source = chain(
@@ -469,4 +494,6 @@ if __name__ == '__main__':
         no_recent=60 * 60 * 24 * 0,
         deploy_span=5 * 60,
         max_part_rows=3000000,
+        user_id=os.environ["GELBOORU_USER_ID"],
+        api_key=os.environ["GELBOORU_API_KEY"],
     )
