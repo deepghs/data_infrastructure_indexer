@@ -32,3 +32,4 @@ hbutils
 requests
 numpy
 natsort
+google-re2<1.1.20250722
