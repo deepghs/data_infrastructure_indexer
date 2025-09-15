@@ -35,6 +35,8 @@ def _get_tags_by_page(p: int, session=None):
     })
     resp.raise_for_status()
 
+    print(resp.text)
+
     json_data = xmltodict.parse(resp.text)
     if 'tags' not in json_data or 'tag' not in json_data['tags']:
         return None
