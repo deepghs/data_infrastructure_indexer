@@ -68,6 +68,8 @@ jobs:
           CI: 'true'
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_RX: ${{ secrets.REMOTE_REPOSITORY_RX }}
+          RULE34_USER_ID: ${{ secrets.RULE34_USER_ID }}
+          RULE34_API_KEY: ${{ secrets.RULE34_API_KEY }}
         shell: bash
         run: |
           python -m inf.rule34.tags
