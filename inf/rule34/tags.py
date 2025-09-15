@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -12,10 +13,14 @@ from ditk import logging
 from hbutils.system import TemporaryDirectory
 from hfutils.operate import upload_directory_as_directory, get_hf_fs, get_hf_client
 from pyquery import PyQuery as pq
+from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
 
 __site_url__ = 'https://rule34.xxx'
+
+_RATE = Rate(60, int(math.ceil(Duration.SECOND * 60)))
+_LIMITER = Limiter(_RATE, max_delay=1 << 32)
 
 
 def _get_session():
@@ -37,6 +42,7 @@ def _get_tags_by_page(p: int, user_id: Optional[str] = None, api_key: Optional[s
     if user_id and api_key:
         params['user_id'] = user_id
         params['api_key'] = api_key
+    _LIMITER.try_acquire('api limit')
     resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
     resp.raise_for_status()
 
@@ -115,6 +121,7 @@ def _get_tag_aliases_by_page(p, user_id: Optional[str] = None, api_key: Optional
     if user_id and api_key:
         params['user_id'] = user_id
         params['api_key'] = api_key
+    _LIMITER.try_acquire('api limit')
     resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
     resp.raise_for_status()
 
