@@ -15,9 +15,12 @@ from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hfutils.cache import delete_detached_cache
 from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
-from hfutils.utils import number_to_tag, get_requests_session
+from hfutils.utils import number_to_tag
 from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
+from waifuc.utils import srequest
+
+from .tags import _get_session
 
 mimetypes.add_type('image/webp', '.webp')
 __site_url__ = 'https://rule34.xxx'
@@ -191,11 +194,11 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             _last_update = time.time()
             last_image_count = len(exist_ids)
 
-    session = get_requests_session()
+    session = _get_session()
 
     def _get_posts(tags: List[str], page: int = 1):
         logging.info(f'Get posts for tags: {tags!r}, page: {page!r} ...')
-        resp = session.get(f'{__site_url__}/index.php', params={
+        resp = srequest(session, 'GET', f'{__site_url__}/index.php', params={
             'page': 'dapi',
             's': 'post',
             'q': 'index',

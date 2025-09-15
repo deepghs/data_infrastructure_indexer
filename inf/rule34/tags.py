@@ -4,12 +4,12 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
+import cloudscraper
 import pandas as pd
 import xmltodict
 from ditk import logging
 from hbutils.system import TemporaryDirectory
 from hfutils.operate import upload_directory_as_directory, get_hf_fs, get_hf_client
-from hfutils.utils import get_requests_session
 from pyquery import PyQuery as pq
 from tqdm import tqdm
 from waifuc.utils import srequest
@@ -18,7 +18,8 @@ __site_url__ = 'https://rule34.xxx'
 
 
 def _get_session():
-    return get_requests_session()
+    return cloudscraper.create_scraper()
+    # return get_requests_session()
 
 
 def _get_tags_by_page(p: int, session=None):
