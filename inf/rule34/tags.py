@@ -3,6 +3,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+from typing import Optional
 
 import cloudscraper
 import pandas as pd
@@ -22,17 +23,21 @@ def _get_session():
     # return get_requests_session()
 
 
-def _get_tags_by_page(p: int, session=None):
+def _get_tags_by_page(p: int, user_id: Optional[str] = None, api_key: Optional[str] = None, session=None):
     session = session or _get_session()
     logging.info(f'Getting page {p} for tags ...')
-    resp = srequest(session, 'GET', f'{__site_url__}/index.php', params={
+    params = {
         'page': 'dapi',
         's': 'tag',
         'q': 'index',
         'json': '1',
         'limit': '100',
         'pid': str(p),
-    })
+    }
+    if user_id and api_key:
+        params['user_id'] = user_id
+        params['api_key'] = api_key
+    resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
     resp.raise_for_status()
 
     print(resp.text)
@@ -53,15 +58,15 @@ def _get_tags_by_page(p: int, session=None):
     return data
 
 
-def _get_all_tags(session=None):
+def _get_all_tags(user_id: Optional[str] = None, api_key: Optional[str] = None, session=None):
     session = session or _get_session()
     l, r = 1, 2
-    while _get_tags_by_page(r, session):
+    while _get_tags_by_page(r, user_id, api_key, session):
         l, r = l << 1, r << 1
 
     while l < r:
         m = (l + r + 1) // 2
-        if _get_tags_by_page(m):
+        if _get_tags_by_page(m, user_id, api_key, session):
             l = m
         else:
             r = m - 1
@@ -76,7 +81,7 @@ def _get_all_tags(session=None):
     pg_tags = tqdm(desc='Tags')
 
     def _scrap_page(pid):
-        res = _get_tags_by_page(pid, session)
+        res = _get_tags_by_page(pid, user_id, api_key, session)
         if not res:
             return
         for item in res:
@@ -99,14 +104,18 @@ def _get_all_tags(session=None):
     return df
 
 
-def _get_tag_aliases_by_page(p, session=None):
+def _get_tag_aliases_by_page(p, user_id: Optional[str] = None, api_key: Optional[str] = None, session=None):
     session = session or _get_session()
     logging.info(f'Getting page {p} for tag aliases ...')
-    resp = srequest(session, 'GET', f'{__site_url__}/index.php', params={
+    params = {
         'page': 'alias',
         's': 'list',
         'pid': str(p),
-    })
+    }
+    if user_id and api_key:
+        params['user_id'] = user_id
+        params['api_key'] = api_key
+    resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
     resp.raise_for_status()
 
     page = pq(resp.text)
@@ -124,15 +133,15 @@ def _get_tag_aliases_by_page(p, session=None):
     return data
 
 
-def _get_all_tag_aliases(session=None):
+def _get_all_tag_aliases(user_id: Optional[str] = None, api_key: Optional[str] = None, session=None):
     session = session or _get_session()
     l, r = 1, 2
-    while _get_tag_aliases_by_page(r, session):
+    while _get_tag_aliases_by_page(r, user_id, api_key, session):
         l, r = l << 1, r << 1
 
     while l < r:
         m = (l + r + 1) // 2
-        if _get_tag_aliases_by_page(m):
+        if _get_tag_aliases_by_page(m, user_id, api_key, session):
             l = m
         else:
             r = m - 1
@@ -147,7 +156,7 @@ def _get_all_tag_aliases(session=None):
     pg_tags = tqdm(desc='Tag Aliases')
 
     def _scrap_page(pid):
-        res = _get_tag_aliases_by_page(pid, session)
+        res = _get_tag_aliases_by_page(pid, user_id, api_key, session)
         if not res:
             return
         for item in res:
@@ -172,7 +181,7 @@ def _get_all_tag_aliases(session=None):
     return df
 
 
-def sync(repository: str):
+def sync(repository: str, user_id: Optional[str] = None, api_key: Optional[str] = None):
     hf_fs = get_hf_fs(hf_token=os.environ['HF_TOKEN'])
     hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN'])
 
@@ -186,8 +195,9 @@ def sync(repository: str):
             os.linesep.join(attr_lines),
         )
 
-    df_tags = _get_all_tags()
-    df_tag_aliases = _get_all_tag_aliases()
+    session = _get_session()
+    df_tags = _get_all_tags(user_id, api_key, session)
+    df_tag_aliases = _get_all_tag_aliases(user_id, api_key, session)
 
     with TemporaryDirectory() as td:
         df_tags.to_parquet(os.path.join(td, 'index_tags.parquet'), index=False)
@@ -206,5 +216,7 @@ def sync(repository: str):
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
     sync(
-        repository=os.environ['REMOTE_REPOSITORY_RX']
+        repository=os.environ['REMOTE_REPOSITORY_RX'],
+        user_id=os.environ['RULE34_USER_ID'],
+        api_key=os.environ['RULE34_API_KEY'],
     )
