@@ -19,7 +19,7 @@ from waifuc.utils import srequest
 
 __site_url__ = 'https://rule34.xxx'
 
-_RATE = Rate(60, int(math.ceil(Duration.SECOND * 60)))
+_RATE = Rate(55, int(math.ceil(Duration.SECOND * 60)))
 _LIMITER = Limiter(_RATE, max_delay=1 << 32)
 
 
