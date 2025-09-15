@@ -5,7 +5,7 @@ import mimetypes
 import os
 import re
 import time
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
-from .tags import _get_session
+from .tags import _get_session, _LIMITER
 
 mimetypes.add_type('image/webp', '.webp')
 __site_url__ = 'https://rule34.xxx'
@@ -36,7 +36,7 @@ _TAG_TYPES = {
 
 def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: float = 30,
          deploy_span: float = 5 * 60, no_recent: float = 60 * 60 * 24 * 15,
-         max_part_rows: int = 1500000):
+         max_part_rows: int = 1500000, user_id: Optional[str] = None, api_key: Optional[str] = None):
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
@@ -198,7 +198,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
     def _get_posts(tags: List[str], page: int = 1):
         logging.info(f'Get posts for tags: {tags!r}, page: {page!r} ...')
-        resp = srequest(session, 'GET', f'{__site_url__}/index.php', params={
+        params = {
             'page': 'dapi',
             's': 'post',
             'q': 'index',
@@ -206,7 +206,12 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             'json': '1',
             'limit': '1000',
             'pid': str(page),
-        })
+        }
+        if user_id and api_key:
+            params['user_id'] = user_id
+            params['api_key'] = api_key
+        _LIMITER.try_acquire('api limit')
+        resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
         return resp.json()
 
     def _yield_from_newest():
@@ -292,4 +297,6 @@ if __name__ == '__main__':
         no_recent=60 * 60 * 24 * 0,
         deploy_span=3 * 60,
         max_part_rows=2000000,
+        user_id=os.environ['RULE34_USER_ID'],
+        api_key=os.environ['RULE34_API_KEY'],
     )
