@@ -46,8 +46,6 @@ def _get_tags_by_page(p: int, user_id: Optional[str] = None, api_key: Optional[s
     resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
     resp.raise_for_status()
 
-    print(resp.text)
-
     json_data = xmltodict.parse(resp.text)
     if 'tags' not in json_data or 'tag' not in json_data['tags']:
         return None
