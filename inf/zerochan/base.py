@@ -30,7 +30,9 @@ def _get_session_for_zerochan(auth: Optional[Tuple[str, str]] = None) -> request
         'sec-fetch-site': 'none',
         'sec-fetch-user': '?1',
     })
-    source._check_session()
+    resp = source.session.get('https://www.zerochan.net/xbotcheck-image.svg')
+    resp.raise_for_status()
+    assert source._check_session(), 'Session check failed'
     if auth:
         source._auth()
 
@@ -44,3 +46,8 @@ def get_session():
         os.environ['ZEROCHAN_USERNAME'],
         os.environ['ZEROCHAN_PASSWORD'],
     ))
+
+# if __name__ == '__main__':
+#     s = get_session()
+#     resp = s.get('https://www.zerochan.net/?json=1')
+#     print(resp)
