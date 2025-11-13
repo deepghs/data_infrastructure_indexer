@@ -23,8 +23,8 @@ from hfutils.utils import number_to_tag
 from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from tqdm import tqdm
-from waifuc.utils import srequest
 
+from inf.utils.session import srequest
 from .tags import _get_session, _get_tags_by_page
 
 mimetypes.add_type('image/webp', '.webp')
