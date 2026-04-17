@@ -1,0 +1,49 @@
+#file: noinspection YAMLSchemaValidation
+name: HF Safe Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Safe Smoke ${{ matrix.repeat }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat:
+          - 1
+          - 2
+          - 3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 20
+          submodules: recursive
+      - name: Set up system dependencies on Linux
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree cloc wget curl make zip git-lfs
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.8'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade flake8 setuptools wheel twine
+          pip install -r requirements.txt -r requirements-test.txt
+      - name: Run HF safe smoke tests
+        env:
+          CI: 'true'
+          HF_SAFE_SMOKE: '1'
+          HF_SAFE_SMOKE_SUFFIX: ${{ github.run_id }}-${{ matrix.repeat }}
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: bash
+        run: |
+          pytest -sv test/utils/test_safe.py

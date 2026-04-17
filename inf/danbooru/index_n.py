@@ -16,6 +16,8 @@ from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
 
+from inf.utils.safe import safe_hf_hub_download
+
 mimetypes.add_type('image/webp', '.webp')
 
 
@@ -44,7 +46,8 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
         )
 
     if hf_fs.exists(f'datasets/{repository}/records.parquet'):
-        df_records = pd.read_parquet(hf_client.hf_hub_download(
+        df_records = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='records.parquet'

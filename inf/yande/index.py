@@ -16,6 +16,8 @@ from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
+from inf.utils.safe import safe_hf_hub_download
+
 mimetypes.add_type('image/webp', '.webp')
 _TAG_TYPES = {
     -1: 'unknown',
@@ -49,7 +51,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         )
 
     if hf_fs.exists(f'datasets/{repository}/yande.parquet'):
-        df_ = pd.read_parquet(hf_client.hf_hub_download(
+        df_ = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='yande.parquet',
@@ -62,7 +65,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         pre_ids = set()
         records = []
 
-    df_index_tags = pd.read_parquet(hf_client.hf_hub_download(
+    df_index_tags = pd.read_parquet(safe_hf_hub_download(
+        hf_client,
         repo_id=repository,
         repo_type='dataset',
         filename='index_tags.parquet'
@@ -70,7 +74,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
     d_index_tags = {item['name']: item for item in df_index_tags.to_dict('records')}
 
     if hf_fs.exists(f'datasets/{repository}/tags.parquet'):
-        df_tags = pd.read_parquet(hf_client.hf_hub_download(
+        df_tags = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='tags.parquet'

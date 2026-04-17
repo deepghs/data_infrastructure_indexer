@@ -7,6 +7,8 @@ from hbutils.system import TemporaryDirectory
 from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
 from hfutils.utils import hf_fs_path, parse_hf_fs_path
 
+from inf.utils.safe import safe_hf_hub_download
+
 
 def sync(repository: str, exist_repo: str):
     hf_client = get_hf_client()
@@ -30,7 +32,8 @@ def sync(repository: str, exist_repo: str):
             filename='original/*.json',
     )):
         filename = parse_hf_fs_path(path).filename
-        with open(hf_client.hf_hub_download(
+        with open(safe_hf_hub_download(
+                hf_client,
                 repo_id=exist_repo,
                 repo_type='dataset',
                 filename=filename,

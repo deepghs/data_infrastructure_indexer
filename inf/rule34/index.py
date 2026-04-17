@@ -20,6 +20,7 @@ from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
+from inf.utils.safe import safe_hf_hub_download
 from .tags import _get_session, _LIMITER
 
 mimetypes.add_type('image/webp', '.webp')
@@ -72,7 +73,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         last_file_name = os.path.basename(last_path)
         last_rel_file = os.path.relpath(last_path, f'datasets/{repository}')
         current_ptr = int(os.path.splitext(last_file_name)[0].split('-')[-1])
-        df_record = pd.read_parquet(hf_client.hf_hub_download(
+        df_record = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename=last_rel_file,
@@ -87,7 +89,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         current_ptr = 1
     logging.info(f'Current table ptr: {current_ptr!r}, records: {len(records)}')
 
-    df_origin_tags = pd.read_parquet(hf_client.hf_hub_download(
+    df_origin_tags = pd.read_parquet(safe_hf_hub_download(
+        hf_client,
         repo_id=repository,
         repo_type='dataset',
         filename='index_tags.parquet',
@@ -99,7 +102,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             repo_type='dataset',
             filename='tags.parquet',
     ):
-        df_tags = pd.read_parquet(hf_client.hf_hub_download(
+        df_tags = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='tags.parquet',

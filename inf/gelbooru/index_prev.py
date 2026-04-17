@@ -18,12 +18,13 @@ from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hbutils.testing import disable_output
 from hfutils.cache import delete_detached_cache
-from hfutils.operate import upload_directory_as_directory, download_archive_as_directory, get_hf_client, get_hf_fs
+from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from tqdm import tqdm
 
+from inf.utils.safe import safe_hf_hub_download, safe_download_archive_as_directory
 from inf.utils.session import srequest
 from .tags import _get_session, _get_tags_by_page
 
@@ -164,7 +165,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         last_file_name = os.path.basename(last_path)
         last_rel_file = os.path.relpath(last_path, f'datasets/{repository}')
         current_ptr = int(os.path.splitext(last_file_name)[0].split('-')[-1])
-        df_record = pd.read_parquet(hf_client.hf_hub_download(
+        df_record = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename=last_rel_file,
@@ -179,7 +181,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         current_ptr = 1
     logging.info(f'Current table ptr: {current_ptr!r}, records: {len(records)}')
 
-    df_origin_tags = pd.read_parquet(hf_client.hf_hub_download(
+    df_origin_tags = pd.read_parquet(safe_hf_hub_download(
+        hf_client,
         repo_id=repository,
         repo_type='dataset',
         filename='index_tags.parquet',
@@ -188,7 +191,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
     d_origin_tags = {item['name']: item for item in df_origin_tags.to_dict('records')}
 
     if hf_fs.exists(f'datasets/{repository}/tags.parquet'):
-        df_tags = pd.read_parquet(hf_client.hf_hub_download(
+        df_tags = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='tags.parquet',
@@ -309,11 +313,12 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             logging.info(f'Get posts from archives {archive_file!r} ...')
             with TemporaryDirectory() as td:
                 with disable_output():
-                    download_archive_as_directory(
+                    safe_download_archive_as_directory(
                         repo_id=_ARCHIVE_REPO,
                         repo_type='dataset',
                         file_in_repo=archive_file,
                         local_directory=td,
+                        hf_client=hf_client,
                     )
 
                 files = natsorted(glob.glob(os.path.join(td, '*.json')))

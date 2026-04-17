@@ -18,6 +18,7 @@ from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
 
+from inf.utils.safe import safe_hf_hub_download
 from .base import _ROOT
 
 mimetypes.add_type('image/webp', '.webp')
@@ -131,12 +132,14 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             for path in hf_fs.glob(f'datasets/{repository}/pages/*/posts.parquet')
         ])[-1]
 
-        df_posts = pd.read_parquet(hf_client.hf_hub_download(
+        df_posts = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename=f'pages/{current_page_id}/posts.parquet',
         ))
-        df_attachments = pd.read_parquet(hf_client.hf_hub_download(
+        df_attachments = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename=f'pages/{current_page_id}/attachments.parquet',
@@ -153,7 +156,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         records = []
         attachments = []
 
-    df_creators = pd.read_parquet(hf_client.hf_hub_download(
+    df_creators = pd.read_parquet(safe_hf_hub_download(
+        hf_client,
         repo_id=repository,
         repo_type='dataset',
         filename='creators.parquet',

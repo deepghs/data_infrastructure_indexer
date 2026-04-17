@@ -20,6 +20,7 @@ from hfutils.utils import number_to_tag
 from pyrate_limiter import Duration, Limiter, Rate
 from waifuc.utils import srequest
 
+from inf.utils.safe import safe_hf_hub_download
 from .base import get_session
 from .tag import _get_tag_info
 
@@ -59,7 +60,8 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         )
 
     if hf_fs.exists(f'datasets/{repository}/zerochan.parquet'):
-        df_ = pd.read_parquet(hf_client.hf_hub_download(
+        df_ = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='zerochan.parquet',

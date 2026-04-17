@@ -19,6 +19,8 @@ from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_direct
 from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 
+from inf.utils.safe import safe_hf_hub_download
+
 mimetypes.add_type('image/webp', '.webp')
 
 _TAG_CATEGORIES = {
@@ -117,7 +119,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             for path in hf_fs.glob(f'datasets/{repository}/e621-*.parquet')
         ])[-1]
 
-        df = pd.read_parquet(hf_client.hf_hub_download(
+        df = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename=f'e621-{last_page_id}.parquet',
@@ -143,7 +146,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         max_id = 0
         exist_ids = set()
 
-    df_origin_tags = pd.read_parquet(hf_client.hf_hub_download(
+    df_origin_tags = pd.read_parquet(safe_hf_hub_download(
+        hf_client,
         repo_id=repository,
         repo_type='dataset',
         filename='index_tags.parquet',
@@ -155,7 +159,8 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             repo_type='dataset',
             filename='tags.parquet',
     ):
-        df_tags = pd.read_parquet(hf_client.hf_hub_download(
+        df_tags = pd.read_parquet(safe_hf_hub_download(
+            hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='tags.parquet',
