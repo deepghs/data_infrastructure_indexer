@@ -108,8 +108,8 @@ def test_safe_download_helpers_smoke(tmp_path):
             repo_type='dataset',
             filename='meta.json',
             local_dir=download_dir,
-            max_retries=3,
-            retry_wait_time=0.5,
+            max_retries=5,
+            retry_wait_time=1.0,
         )
         assert json.loads(Path(downloaded_meta).read_text()) == meta_content
 
@@ -120,8 +120,8 @@ def test_safe_download_helpers_smoke(tmp_path):
             repo_type='dataset',
             file_in_repo='meta.json',
             hf_client=hf_client,
-            max_retries=3,
-            retry_wait_time=0.5,
+            max_retries=5,
+            retry_wait_time=1.0,
         )
         assert json.loads(downloaded_copy.read_text()) == meta_content
 
@@ -132,8 +132,8 @@ def test_safe_download_helpers_smoke(tmp_path):
             repo_type='dataset',
             file_in_repo='payload.zip',
             hf_client=hf_client,
-            max_retries=3,
-            retry_wait_time=0.5,
+            max_retries=5,
+            retry_wait_time=1.0,
         )
         assert (unpacked_dir / 'hello.txt').read_text() == 'hello from safe smoke test\n'
     finally:

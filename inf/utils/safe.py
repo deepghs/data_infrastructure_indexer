@@ -11,7 +11,7 @@ from hfutils.archive import archive_unpack
 from hfutils.operate import get_hf_client
 from hfutils.operate.download import is_local_file_ready
 from huggingface_hub import HfApi, constants
-from huggingface_hub.utils import HfHubHTTPError, reset_sessions
+from huggingface_hub.utils import HfHubHTTPError, LocalEntryNotFoundError, FileMetadataError, reset_sessions
 
 _RETRYABLE_STATUS_CODES = {
     408, 409, 425, 429,
@@ -43,6 +43,9 @@ def _cleanup_target(path: str):
 
 
 def _is_retryable_download_error(err: Exception) -> bool:
+    if isinstance(err, (LocalEntryNotFoundError, FileMetadataError)):
+        return True
+
     if isinstance(err, HfHubHTTPError):
         status_code = getattr(getattr(err, 'response', None), 'status_code', None)
         return status_code in _RETRYABLE_STATUS_CODES
@@ -61,6 +64,9 @@ def _is_retryable_download_error(err: Exception) -> bool:
 
     if isinstance(err, OSError):
         return 'Consistency check failed' in str(err)
+
+    if isinstance(err, ValueError):
+        return 'Force download failed due to the above error.' in str(err)
 
     return False
 
