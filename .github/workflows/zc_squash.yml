@@ -66,6 +66,7 @@ jobs:
       - name: Run unittest
         env:
           CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_ZC: ${{ secrets.REMOTE_REPOSITORY_ZC }}
           REMOTE_REPOSITORY_ZC_PUBLIC: ${{ secrets.REMOTE_REPOSITORY_ZC_PUBLIC }}

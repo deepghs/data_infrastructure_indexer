@@ -66,6 +66,7 @@ jobs:
       - name: Run unittest
         env:
           CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_DB_CH_TAGS_VRAW: ${{ secrets.REMOTE_REPOSITORY_DB_CH_TAGS_VRAW }}
           DANBOORU_USERNAME: ${{ secrets.DANBOORU_USERNAME }}
