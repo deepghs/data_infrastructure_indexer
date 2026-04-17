@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import uuid
 import zipfile
 from pathlib import Path
@@ -7,6 +8,10 @@ from pathlib import Path
 import pytest
 import requests
 from huggingface_hub import HfApi
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from inf.utils.safe import safe_hf_hub_download, safe_download_file_to_file, safe_download_archive_as_directory
 
