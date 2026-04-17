@@ -88,6 +88,8 @@ Do not use `git commit -m "subject\n\nbody"` style commands in this repository.
 
 Keep commit scope narrow. One commit should usually cover one site adapter, one workflow change, or one focused bug fix.
 
+Do not include local absolute paths in commit messages, commit bodies, repository files, generated artifacts, examples, logs, or screenshots checked into the repository. Paths such as `/home/<user>/...`, `/Users/<name>/...`, or `C:\Users\<name>\...` can expose private usernames, workstation layouts, or other sensitive local details. Rewrite them as repository-relative paths, sanitized placeholders, or generic examples before committing.
+
 ## Project Structure And Module Organization
 `inf/` contains the runtime code. Each source site is isolated in its own package, including `inf/danbooru/`, `inf/e621/`, `inf/gelbooru/`, `inf/kemono/`, `inf/konachan/`, `inf/rule34/`, `inf/yande/`, and `inf/zerochan/`.
 
@@ -170,5 +172,7 @@ If you touch a scheduled job, verify that the corresponding workflow entrypoint 
 
 ## Security And Configuration Notes
 Do not commit secrets, tokens, cookies, private repository identifiers, or local credentials. Runtime commonly depends on environment variables such as `HF_TOKEN`, `REMOTE_REPOSITORY_*`, `ZEROCHAN_USERNAME`, `ZEROCHAN_PASSWORD`, `DANBOORU_USERNAME`, and `DANBOORU_APITOKEN`.
+
+Do not commit local absolute filesystem paths or paste them into tracked examples, logs, fixtures, documentation, or commit history. Sanitize path examples to use repository-relative paths or placeholders so local machine details are not exposed.
 
 When modifying sync behavior, keep private dataset or account details out of examples, logs, and test fixtures. If a change affects authentication or rate limiting, document the operational impact in English in the relevant code comments or pull request.
