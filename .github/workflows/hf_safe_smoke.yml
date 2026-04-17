@@ -44,6 +44,7 @@ jobs:
           HF_SAFE_SMOKE_SUFFIX: ${{ github.run_id }}-${{ matrix.repeat }}
           HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONPATH: .
         shell: bash
         run: |
           pytest -sv test/utils/test_safe.py
