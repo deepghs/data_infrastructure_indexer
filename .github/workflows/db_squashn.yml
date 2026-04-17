@@ -4,8 +4,8 @@ name: Danbooru Squash
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '15 22 * * *'
+  # schedule:
+  #   - cron: '15 22 * * *'
 
 jobs:
   unittest:

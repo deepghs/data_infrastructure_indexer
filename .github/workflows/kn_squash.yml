@@ -4,8 +4,8 @@ name: Konachan Squash
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '15 20 * * *'
+  # schedule:
+  #   - cron: '15 20 * * *'
 
 jobs:
   unittest:

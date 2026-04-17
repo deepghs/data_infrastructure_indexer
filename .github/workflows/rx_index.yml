@@ -4,8 +4,8 @@ name: Rule34 Index
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '45 12 * * 1,4'
+  # schedule:
+  #   - cron: '45 12 * * 1,4'
 
 jobs:
   unittest:

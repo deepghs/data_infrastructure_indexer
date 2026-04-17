@@ -4,8 +4,8 @@ name: Konachan Index
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '45 12 * * 3'
+  # schedule:
+  #   - cron: '45 12 * * 3'
 
 jobs:
   unittest:

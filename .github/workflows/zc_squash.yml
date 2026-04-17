@@ -4,8 +4,8 @@ name: Zerochan Squash
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '53 12 * * 0'
+  # schedule:
+  #   - cron: '53 12 * * 0'
 
 jobs:
   unittest:

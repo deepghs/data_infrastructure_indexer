@@ -4,8 +4,8 @@ name: Yande Squash
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '50 19 * * *'
+  # schedule:
+  #   - cron: '50 19 * * *'
 
 jobs:
   unittest:

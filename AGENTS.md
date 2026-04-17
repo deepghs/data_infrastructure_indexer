@@ -28,6 +28,64 @@ Recent history follows a `dev(<author>): <summary>` style. New commits should ke
 dev(narugo1992): add zerochan session retry guard
 ```
 
+The first line must stay in the `xxxx(<author>): xxxx` format, but commit messages are now expected to use a detailed multi-line body after that summary line. Follow the long-form style used in `~/oo-projects/pyfcstm` history:
+
+- leave one blank line after the summary line
+- add one concise explanatory paragraph describing the intent or user-visible outcome
+- add a flat bullet list with concrete change points
+- add a `Tests:` section when validation was run, with one bullet per command
+- do not collapse the entire message into one line or rely on literal `\n` escape sequences inside a single shell string
+
+Preferred commit message shape:
+
+```text
+dev(narugo1992): disable scheduled workflow triggers
+
+Pause the non-date scheduled GitHub Actions workflows so they stop running automatically while keeping every cron expression visible for staged re-enablement.
+
+- comment out each non-date workflow `schedule:` block instead of deleting it
+- keep `workflow_dispatch` enabled so each workflow can still be triggered manually
+- document the repository commit message expectations in AGENTS.md
+
+Tests:
+- python - <<'PY' ...
+- git diff --check
+```
+
+When creating a multi-line commit from the shell, use one `-m` per paragraph instead of embedding `\n` in a single argument. For example:
+
+```bash
+git commit \
+  -m "dev(narugo1992): disable scheduled workflow triggers" \
+  -m "Pause the non-date scheduled GitHub Actions workflows so they stop running automatically while keeping every cron expression visible for staged re-enablement." \
+  -m "- comment out each non-date workflow schedule block instead of deleting it
+- keep workflow_dispatch enabled for manual recovery
+- document the long-form commit standard in AGENTS.md" \
+  -m "Tests:
+- git diff --check"
+```
+
+For longer messages, prefer writing the message into a temporary file and passing it with `-F`:
+
+```bash
+cat <<'EOF' >/tmp/commit-message.txt
+dev(narugo1992): disable scheduled workflow triggers
+
+Pause the non-date scheduled GitHub Actions workflows so they stop running automatically while keeping every cron expression visible for staged re-enablement.
+
+- comment out each non-date workflow `schedule:` block instead of deleting it
+- keep `workflow_dispatch` enabled so each workflow can still be triggered manually
+- document the repository commit message expectations in AGENTS.md
+
+Tests:
+- git diff --check
+EOF
+
+git commit -F /tmp/commit-message.txt
+```
+
+Do not use `git commit -m "subject\n\nbody"` style commands in this repository.
+
 Keep commit scope narrow. One commit should usually cover one site adapter, one workflow change, or one focused bug fix.
 
 ## Project Structure And Module Organization

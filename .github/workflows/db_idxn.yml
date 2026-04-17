@@ -4,8 +4,8 @@ name: Danbooru Index (N)
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '45 0 * * 0,3'
+  # schedule:
+  #   - cron: '45 0 * * 0,3'
 
 jobs:
   unittest:

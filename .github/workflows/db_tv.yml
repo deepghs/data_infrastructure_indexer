@@ -4,8 +4,8 @@ name: Danbooru CH Tags
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '45 7 * * *'
+  # schedule:
+  #   - cron: '45 7 * * *'
 
 jobs:
   unittest:
