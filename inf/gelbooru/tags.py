@@ -1,5 +1,4 @@
 import html
-import logging
 import math
 import os
 import time
@@ -8,6 +7,7 @@ from itertools import chain
 from threading import Lock
 from typing import Optional
 
+import click
 import pandas as pd
 import requests.exceptions
 from ditk import logging
@@ -20,7 +20,7 @@ from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
 
-from inf.utils.cli import env_default, run_callable_from_cli
+from inf.utils.duration import duration_type
 
 __site_url__ = 'https://gelbooru.com'
 
@@ -265,16 +265,58 @@ def sync(repository: str, proxy_pool: Optional[str] = None, access_interval: Opt
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Gelbooru tag and alias metadata into the target Hugging Face dataset repository. '
+         'The command crawls upstream tag and alias pages, optionally routes requests through a proxy pool, '
+         'and writes refreshed parquet index files back to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_GB',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-p', '--proxy-pool',
+    type=str,
+    default=None,
+    help='Proxy endpoint or pool URL to attach to upstream requests.',
+)
+@click.option(
+    '-i', '--access-interval',
+    type=duration_type(allow_none=True),
+    default=None,
+    help='Minimum interval between site API requests. Use none or unlimited to disable the limit.',
+)
+@click.option(
+    '-U', '--user-id',
+    type=str,
+    envvar='GELBOORU_USER_ID',
+    required=True,
+    show_envvar=True,
+    help='Site user ID used for authenticated upstream requests.',
+)
+@click.option(
+    '-A', '--api-key',
+    type=str,
+    envvar='GELBOORU_API_KEY',
+    required=True,
+    show_envvar=True,
+    help='Site API key used for authenticated upstream requests.',
+)
+def cli(repository: str, proxy_pool: Optional[str], access_interval: Optional[float], user_id: str, api_key: str):
     logging.try_init_root(logging.INFO)
-    # pprint(_get_tag_aliases_by_page(1))
-    # pprint(_get_tags_by_page(
-    #     p=1,
-    #     user_id=os.environ["GELBOORU_USER_ID"],
-    #     api_key=os.environ["GELBOORU_API_KEY"],
-    # ))
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_GB'),
-        'user_id': env_default('GELBOORU_USER_ID'),
-        'api_key': env_default('GELBOORU_API_KEY'),
-    })
+    return sync(
+        repository=repository,
+        proxy_pool=proxy_pool,
+        access_interval=access_interval,
+        user_id=user_id,
+        api_key=api_key,
+    )
+
+
+if __name__ == '__main__':
+    cli()

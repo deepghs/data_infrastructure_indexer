@@ -7,6 +7,7 @@ import time
 from functools import partial
 from typing import Optional, List
 
+import click
 import httpx
 import numpy as np
 import pandas as pd
@@ -20,7 +21,7 @@ from hfutils.utils import number_to_tag
 from pyrate_limiter import Duration, Limiter, Rate
 from waifuc.utils import srequest
 
-from inf.utils.cli import env_default, run_callable_from_cli
+from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download
 from .base import get_session
 from .tag import _get_tag_info
@@ -329,14 +330,80 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             _deploy(force=True)
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Zerochan post metadata and tag state into the target Hugging Face dataset repository. '
+         'The command iterates upstream post IDs, refreshes tag metadata on demand, '
+         'and periodically writes parquet, tag and meta snapshots back to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_ZC',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-m', '--max-time-limit',
+    type=duration_type(allow_none=True),
+    default=5.7 * 60 * 60,
+    show_default=True,
+    help='Stop the sync after this total runtime. Use none or unlimited to disable the limit.',
+)
+@click.option(
+    '-u', '--upload-time-span',
+    type=duration_type(),
+    default=30,
+    show_default=True,
+    help='Minimum interval between upload batches.',
+)
+@click.option(
+    '-t', '--tag-refresh-time',
+    type=duration_type(),
+    default=15 * 24 * 60 * 60,
+    show_default=True,
+    help='Refresh cached tag metadata when older than this threshold.',
+)
+@click.option(
+    '-d', '--deploy-span',
+    type=duration_type(),
+    default=5 * 60,
+    show_default=True,
+    help='Minimum interval between deploy or upload commits.',
+)
+@click.option(
+    '-s', '--sync-mode/--no-sync-mode',
+    default=True,
+    show_default=True,
+    help='Continue incremental sync behavior instead of a fresh rebuild.',
+)
+@click.option(
+    '-f', '--try-failed-ids-first/--no-try-failed-ids-first',
+    default=False,
+    show_default=True,
+    help='Retry previously failed record IDs before scanning new ones.',
+)
+@click.option(
+    '-i', '--start-from-id',
+    type=int,
+    default=None,
+    help='Start scanning from this explicit record ID instead of the stored pointer.',
+)
+def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, tag_refresh_time: float,
+        deploy_span: float, sync_mode: bool, try_failed_ids_first: bool, start_from_id: Optional[int]):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_ZC'),
-        'max_time_limit': 5.7 * 60 * 60,
-        'deploy_span': 5 * 60,
-        # try_failed_ids_first=random.random() < 0.0625,
-        'try_failed_ids_first': False,
-        'sync_mode': True,
-        'start_from_id': None,
-    })
+    return sync(
+        repository=repository,
+        max_time_limit=max_time_limit,
+        upload_time_span=upload_time_span,
+        tag_refresh_time=tag_refresh_time,
+        deploy_span=deploy_span,
+        sync_mode=sync_mode,
+        try_failed_ids_first=try_failed_ids_first,
+        start_from_id=start_from_id,
+    )
+
+
+if __name__ == '__main__':
+    cli()

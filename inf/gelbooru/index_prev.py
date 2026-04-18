@@ -9,6 +9,7 @@ import time
 from itertools import chain
 from typing import Optional, List
 
+import click
 import numpy as np
 import pandas as pd
 import requests
@@ -24,7 +25,7 @@ from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from tqdm import tqdm
 
-from inf.utils.cli import env_default, run_callable_from_cli
+from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_download_archive_as_directory
 from inf.utils.session import srequest
 from .tags import _get_session, _get_tags_by_page
@@ -494,16 +495,107 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     _deploy(force=True)
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Gelbooru posts, tag usage and archive-backed history into the target Hugging Face dataset repository. '
+         'The command scans upstream pages, optionally seeds from archived exports, '
+         'and periodically writes refreshed parquet shards and metadata back to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_GB',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-m', '--max-time-limit',
+    type=duration_type(allow_none=True),
+    default=(60 * 5 + 45) * 60,
+    show_default=True,
+    help='Stop the sync after this total runtime. Use none or unlimited to disable the limit.',
+)
+@click.option(
+    '-u', '--upload-time-span',
+    type=duration_type(),
+    default=30,
+    show_default=True,
+    help='Minimum interval between upload batches.',
+)
+@click.option(
+    '-d', '--deploy-span',
+    type=duration_type(),
+    default=5 * 60,
+    show_default=True,
+    help='Minimum interval between deploy or upload commits.',
+)
+@click.option(
+    '-s', '--sync-mode/--no-sync-mode',
+    default=True,
+    show_default=True,
+    help='Continue incremental sync behavior instead of a fresh rebuild.',
+)
+@click.option(
+    '-n', '--no-recent',
+    type=duration_type(),
+    default=0,
+    show_default=True,
+    help='Skip records newer than this recency threshold.',
+)
+@click.option(
+    '-p', '--max-part-rows',
+    type=int,
+    default=3000000,
+    show_default=True,
+    help='Maximum rows to keep in one parquet or table shard before rotating.',
+)
+@click.option(
+    '-a', '--sync-from-archives/--no-sync-from-archives',
+    default=True,
+    show_default=True,
+    help='Seed the sync from archived data before live updates.',
+)
+@click.option(
+    '-U', '--user-id',
+    type=str,
+    envvar='GELBOORU_USER_ID',
+    required=True,
+    show_envvar=True,
+    help='Site user ID used for authenticated upstream requests.',
+)
+@click.option(
+    '-A', '--api-key',
+    type=str,
+    envvar='GELBOORU_API_KEY',
+    required=True,
+    show_envvar=True,
+    help='Site API key used for authenticated upstream requests.',
+)
+@click.option(
+    '-i', '--access-interval',
+    type=duration_type(allow_none=True),
+    default=None,
+    help='Minimum interval between site API requests. Use none or unlimited to disable the limit.',
+)
+def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, deploy_span: float,
+        sync_mode: bool, no_recent: float, max_part_rows: int, sync_from_archives: bool,
+        user_id: str, api_key: str, access_interval: Optional[float]):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_GB'),
-        'max_time_limit': (60 * 5 + 45) * 60,
-        'sync_mode': True,
-        'sync_from_archives': True,
-        'no_recent': 60 * 60 * 24 * 0,
-        'deploy_span': 5 * 60,
-        'max_part_rows': 3000000,
-        'user_id': env_default('GELBOORU_USER_ID'),
-        'api_key': env_default('GELBOORU_API_KEY'),
-    })
+    return sync(
+        repository=repository,
+        max_time_limit=max_time_limit,
+        upload_time_span=upload_time_span,
+        deploy_span=deploy_span,
+        sync_mode=sync_mode,
+        no_recent=no_recent,
+        max_part_rows=max_part_rows,
+        sync_from_archives=sync_from_archives,
+        user_id=user_id,
+        api_key=api_key,
+        access_interval=access_interval,
+    )
+
+
+if __name__ == '__main__':
+    cli()

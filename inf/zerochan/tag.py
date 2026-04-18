@@ -1,6 +1,7 @@
 import re
 from urllib.parse import quote_plus, urljoin, unquote_plus
 
+import click
 import httpx
 import requests.exceptions
 from ditk import logging
@@ -199,6 +200,16 @@ def _get_tag_info(tag, session=None):
     }
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Inspect a sample Zerochan tag payload from the upstream site. '
+         'The command fetches the hard-coded demonstration tag, renders the parsed tag structure, '
+         'and is mainly useful for quick parser inspection and debugging.',
+)
+def cli():
     logging.try_init_root(logging.INFO)
     print(_get_tag_info('Kafei'))
+
+
+if __name__ == '__main__':
+    cli()

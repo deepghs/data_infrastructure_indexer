@@ -4,6 +4,7 @@ import os
 import time
 from typing import Optional
 
+import click
 import numpy as np
 import pandas as pd
 from ditk import logging
@@ -16,7 +17,7 @@ from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
 
-from inf.utils.cli import env_default, run_callable_from_cli
+from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download
 
 mimetypes.add_type('image/webp', '.webp')
@@ -197,15 +198,83 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
     _deploy(force=True)
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Danbooru posts into the target Hugging Face dataset repository. '
+         'The command pulls upstream post metadata in batches, refreshes local parquet snapshots, '
+         'and periodically deploys repository artifacts during the run.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_DB_N',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-u', '--upload-time-span',
+    type=duration_type(),
+    default=30,
+    show_default=True,
+    help='Minimum interval between upload batches.',
+)
+@click.option(
+    '-d', '--deploy-span',
+    type=duration_type(),
+    default=5 * 60,
+    show_default=True,
+    help='Minimum interval between deploy or upload commits.',
+)
+@click.option(
+    '-m', '--max-time-limit',
+    type=duration_type(allow_none=True),
+    default=5.7 * 60 * 60,
+    show_default=True,
+    help='Stop the sync after this total runtime. Use none or unlimited to disable the limit.',
+)
+@click.option(
+    '-s', '--sync-mode/--no-sync-mode',
+    default=True,
+    show_default=True,
+    help='Continue incremental sync behavior instead of a fresh rebuild.',
+)
+@click.option(
+    '-U', '--site-username',
+    type=str,
+    envvar='DANBOORU_USERNAME',
+    default=None,
+    show_envvar=True,
+    help='Site username used for authenticated upstream requests.',
+)
+@click.option(
+    '-A', '--site-apikey',
+    type=str,
+    envvar='DANBOORU_APITOKEN',
+    default=None,
+    show_envvar=True,
+    help='Site API key used for authenticated upstream requests.',
+)
+@click.option(
+    '-g', '--site-golden/--no-site-golden',
+    default=True,
+    show_default=True,
+    help='Enable the Danbooru golden-account request mode.',
+)
+def cli(repository: str, upload_time_span: float, deploy_span: float, max_time_limit: Optional[float],
+        sync_mode: bool, site_username: Optional[str], site_apikey: Optional[str], site_golden: bool):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_DB_N'),
-        'max_time_limit': 5.7 * 60 * 60,
-        'upload_time_span': 30,
-        'deploy_span': 5 * 60,
-        'sync_mode': True,
-        'site_username': env_default('DANBOORU_USERNAME', default=None),
-        'site_apikey': env_default('DANBOORU_APITOKEN', default=None),
-        'site_golden': True,
-    })
+    return sync(
+        repository=repository,
+        upload_time_span=upload_time_span,
+        deploy_span=deploy_span,
+        max_time_limit=max_time_limit,
+        sync_mode=sync_mode,
+        site_username=site_username,
+        site_apikey=site_apikey,
+        site_golden=site_golden,
+    )
+
+
+if __name__ == '__main__':
+    cli()

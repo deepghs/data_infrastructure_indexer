@@ -3,6 +3,7 @@ import re
 from typing import Optional
 from urllib.parse import urljoin
 
+import click
 import pandas as pd
 import requests
 from ditk import logging
@@ -14,8 +15,6 @@ from natsort import natsorted
 from pyquery import PyQuery as pq
 from tqdm import tqdm
 from waifuc.utils import srequest
-
-from inf.utils.cli import env_default, run_callable_from_cli
 
 
 def _get_latest_date_in_index(session: Optional[requests.Session] = None):
@@ -79,8 +78,24 @@ def sync(repository: str):
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync e621 exported index tables into the target Hugging Face dataset repository. '
+         'The command downloads the latest upstream CSV exports, converts them to parquet, '
+         'and uploads the refreshed index tables to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_E621',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+def cli(repository: str):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_E621'),
-    })
+    return sync(repository=repository)
+
+
+if __name__ == '__main__':
+    cli()

@@ -2,10 +2,9 @@ import os
 from functools import partial
 from typing import Optional
 
+import click
 from hfutils.utils import get_requests_session
 from huggingface_hub import HfApi, configure_http_backend
-
-from inf.utils.cli import env_default, run_callable_from_cli
 
 
 def repo_squash(repository: Optional[str] = None, public_repository: Optional[str] = None,
@@ -24,9 +23,60 @@ def repo_squash(repository: Optional[str] = None, public_repository: Optional[st
             )
 
 
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Super-squash the configured Gelbooru dataset repositories when history grows too large. '
+         'The command checks commit counts for the configured repositories '
+         'and triggers Hugging Face history squashing once the threshold is reached.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_GB',
+    default=None,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to process.',
+)
+@click.option(
+    '-p', '--public-repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_GB_PUBLIC',
+    default=None,
+    show_envvar=True,
+    help='Public Hugging Face dataset repository to process alongside the private repo.',
+)
+@click.option(
+    '-P', '--public-repository-4m',
+    type=str,
+    envvar='REMOTE_REPOSITORY_GB_PUBLIC_4M',
+    default=None,
+    show_envvar=True,
+    help='4M public Hugging Face dataset repository to process alongside the private repo.',
+)
+@click.option(
+    '-m', '--min-commits',
+    type=int,
+    default=500,
+    show_default=True,
+    help='Only squash repositories when commit history reaches at least this count.',
+)
+@click.option(
+    '-c', '--commit-message',
+    type=str,
+    default='Squashed!',
+    show_default=True,
+    help='Commit message to use for squash operations.',
+)
+def cli(repository: Optional[str], public_repository: Optional[str], public_repository_4m: Optional[str],
+        min_commits: int, commit_message: str):
+    return repo_squash(
+        repository=repository,
+        public_repository=public_repository,
+        public_repository_4m=public_repository_4m,
+        min_commits=min_commits,
+        commit_message=commit_message,
+    )
+
+
 if __name__ == '__main__':
-    run_callable_from_cli(repo_squash, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_GB', default=None),
-        'public_repository': env_default('REMOTE_REPOSITORY_GB_PUBLIC', default=None),
-        'public_repository_4m': env_default('REMOTE_REPOSITORY_GB_PUBLIC_4M', default=None),
-    })
+    cli()

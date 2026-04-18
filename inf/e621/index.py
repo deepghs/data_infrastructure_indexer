@@ -7,6 +7,7 @@ import time
 from itertools import chain
 from typing import Optional, List
 
+import click
 import httpx
 import numpy as np
 import pandas as pd
@@ -19,7 +20,7 @@ from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_direct
 from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 
-from inf.utils.cli import env_default, run_callable_from_cli
+from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download
 
 mimetypes.add_type('image/webp', '.webp')
@@ -401,14 +402,84 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
     _deploy(force=True)
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync e621 posts and derived tag statistics into the target Hugging Face dataset repository. '
+         'The command walks upstream API pages, refreshes parquet shards and metadata files, '
+         'and periodically uploads incremental snapshots while it runs.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_E621',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-d', '--deploy-span',
+    type=duration_type(),
+    default=5 * 60,
+    show_default=True,
+    help='Minimum interval between deploy or upload commits.',
+)
+@click.option(
+    '-u', '--upload-time-span',
+    type=duration_type(),
+    default=30.0,
+    show_default=True,
+    help='Minimum interval between upload batches.',
+)
+@click.option(
+    '-m', '--max-time-limit',
+    type=duration_type(allow_none=True),
+    default=5.5 * 60 * 60,
+    show_default=True,
+    help='Stop the sync after this total runtime. Use none or unlimited to disable the limit.',
+)
+@click.option(
+    '-p', '--max-part-rows',
+    type=int,
+    default=1000000,
+    show_default=True,
+    help='Maximum rows to keep in one parquet or table shard before rotating.',
+)
+@click.option(
+    '-U', '--site-username',
+    type=str,
+    envvar='E621_USERNAME',
+    default=None,
+    show_envvar=True,
+    help='Site username used for authenticated upstream requests.',
+)
+@click.option(
+    '-A', '--site-apikey',
+    type=str,
+    envvar='E621_APITOKEN',
+    default=None,
+    show_envvar=True,
+    help='Site API key used for authenticated upstream requests.',
+)
+@click.option(
+    '-s', '--sync-mode/--no-sync-mode',
+    default=True,
+    show_default=True,
+    help='Continue incremental sync behavior instead of a fresh rebuild.',
+)
+def cli(repository: str, deploy_span: float, upload_time_span: float, max_time_limit: Optional[float],
+        max_part_rows: int, site_username: Optional[str], site_apikey: Optional[str], sync_mode: bool):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_E621'),
-        'deploy_span': 5 * 60,
-        'max_time_limit': 5.5 * 60 * 60,
-        'max_part_rows': 1000000,
-        'site_username': env_default('E621_USERNAME', default=None),
-        'site_apikey': env_default('E621_APITOKEN', default=None),
-        'sync_mode': True,
-    })
+    return sync(
+        repository=repository,
+        deploy_span=deploy_span,
+        upload_time_span=upload_time_span,
+        max_time_limit=max_time_limit,
+        max_part_rows=max_part_rows,
+        site_username=site_username,
+        site_apikey=site_apikey,
+        sync_mode=sync_mode,
+    )
+
+
+if __name__ == '__main__':
+    cli()

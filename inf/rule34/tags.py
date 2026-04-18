@@ -1,11 +1,11 @@
 import json
-import logging
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from typing import Optional
 
+import click
 import cloudscraper
 import pandas as pd
 import xmltodict
@@ -16,8 +16,6 @@ from pyquery import PyQuery as pq
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
-
-from inf.utils.cli import env_default, run_callable_from_cli
 
 __site_url__ = 'https://rule34.xxx'
 
@@ -221,10 +219,40 @@ def sync(repository: str, user_id: Optional[str] = None, api_key: Optional[str] 
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Rule34 tag and alias metadata into the target Hugging Face dataset repository. '
+         'The command paginates upstream tag endpoints, aggregates tag and alias tables, '
+         'and uploads refreshed parquet index files to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_RX',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-U', '--user-id',
+    type=str,
+    envvar='RULE34_USER_ID',
+    required=True,
+    show_envvar=True,
+    help='Site user ID used for authenticated upstream requests.',
+)
+@click.option(
+    '-A', '--api-key',
+    type=str,
+    envvar='RULE34_API_KEY',
+    required=True,
+    show_envvar=True,
+    help='Site API key used for authenticated upstream requests.',
+)
+def cli(repository: str, user_id: str, api_key: str):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_RX'),
-        'user_id': env_default('RULE34_USER_ID'),
-        'api_key': env_default('RULE34_API_KEY'),
-    })
+    return sync(repository=repository, user_id=user_id, api_key=api_key)
+
+
+if __name__ == '__main__':
+    cli()

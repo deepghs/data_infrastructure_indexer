@@ -1,13 +1,13 @@
 import json
 import os
 
+import click
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
 from hfutils.utils import hf_fs_path, parse_hf_fs_path
 
-from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 
 
@@ -65,9 +65,32 @@ def sync(repository: str, exist_repo: str):
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Build the e621 previous-existence index from the historical dataset repository. '
+         'The command scans archived original metadata, extracts historical file IDs, '
+         'and uploads the generated existence index to the target repositories.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_E621',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-e', '--exist-repo',
+    type=str,
+    envvar='REMOTE_REPOSITORY_E621_2024',
+    required=True,
+    show_envvar=True,
+    help='Existing Hugging Face dataset repository used as the source index.',
+)
+def cli(repository: str, exist_repo: str):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_E621'),
-        'exist_repo': env_default('REMOTE_REPOSITORY_E621_2024'),
-    })
+    return sync(repository=repository, exist_repo=exist_repo)
+
+
+if __name__ == '__main__':
+    cli()

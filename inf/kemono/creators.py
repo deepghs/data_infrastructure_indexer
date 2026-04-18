@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 
+import click
 import pandas as pd
 import requests
 from ditk import logging
@@ -49,8 +50,24 @@ def sync(repository: str):
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Kemono creator metadata into the target Hugging Face dataset repository. '
+         'The command fetches the upstream creator list, materializes a parquet snapshot, '
+         'and uploads the refreshed creator index to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_KMN',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+def cli(repository: str):
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_KMN']
-    )
+    return sync(repository=repository)
+
+
+if __name__ == '__main__':
+    cli()

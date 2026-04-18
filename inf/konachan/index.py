@@ -5,6 +5,7 @@ import re
 import time
 from typing import Optional
 
+import click
 import httpx
 import numpy as np
 import pandas as pd
@@ -17,7 +18,7 @@ from hfutils.utils import number_to_tag, get_requests_session
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
-from inf.utils.cli import env_default, run_callable_from_cli
+from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download
 
 mimetypes.add_type('image/webp', '.webp')
@@ -259,9 +260,66 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     _deploy(force=True)
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Konachan posts and derived tag counts into the target Hugging Face dataset repository. '
+         'The command scans upstream post pages, refreshes parquet and tag snapshots, '
+         'and periodically uploads updated repository state during the run.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_KN',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-m', '--max-time-limit',
+    type=duration_type(allow_none=True),
+    default=5.5 * 60 * 60,
+    show_default=True,
+    help='Stop the sync after this total runtime. Use none or unlimited to disable the limit.',
+)
+@click.option(
+    '-u', '--upload-time-span',
+    type=duration_type(),
+    default=30,
+    show_default=True,
+    help='Minimum interval between upload batches.',
+)
+@click.option(
+    '-d', '--deploy-span',
+    type=duration_type(),
+    default=5 * 60,
+    show_default=True,
+    help='Minimum interval between deploy or upload commits.',
+)
+@click.option(
+    '-s', '--sync-mode/--no-sync-mode',
+    default=False,
+    show_default=True,
+    help='Continue incremental sync behavior instead of a fresh rebuild.',
+)
+@click.option(
+    '-n', '--no-recent',
+    type=duration_type(),
+    default=60 * 60 * 24 * 15,
+    show_default=True,
+    help='Skip records newer than this recency threshold.',
+)
+def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, deploy_span: float,
+        sync_mode: bool, no_recent: float):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_KN'),
-        'max_time_limit': 5.5 * 60 * 60,
-    })
+    return sync(
+        repository=repository,
+        max_time_limit=max_time_limit,
+        upload_time_span=upload_time_span,
+        deploy_span=deploy_span,
+        sync_mode=sync_mode,
+        no_recent=no_recent,
+    )
+
+
+if __name__ == '__main__':
+    cli()

@@ -1,5 +1,6 @@
 import os
 
+import click
 import httpx
 import pandas as pd
 import requests.exceptions
@@ -10,8 +11,6 @@ from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf
 from hfutils.utils import get_requests_session
 from tqdm import tqdm
 from waifuc.utils import srequest
-
-from inf.utils.cli import env_default, run_callable_from_cli
 
 
 def sync(repository: str):
@@ -90,8 +89,24 @@ def sync(repository: str):
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync Konachan tag and alias metadata into the target Hugging Face dataset repository. '
+         'The command walks upstream tag and alias pages, converts the collected tables to parquet, '
+         'and uploads the refreshed index files to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_KN',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+def cli(repository: str):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_KN'),
-    })
+    return sync(repository=repository)
+
+
+if __name__ == '__main__':
+    cli()

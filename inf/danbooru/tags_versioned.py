@@ -7,6 +7,7 @@ from datetime import datetime
 from datetime import timezone
 from typing import Optional
 
+import click
 import dateparser
 import pandas as pd
 from ditk import logging
@@ -19,8 +20,6 @@ from huggingface_hub import hf_hub_url
 from tqdm import tqdm
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
-
-from inf.utils.cli import env_default, run_callable_from_cli
 
 
 def generate_calendar_markdown(f, minx, url_function, last_month_count: int = 12):
@@ -250,10 +249,40 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
         )
 
 
-if __name__ == '__main__':
+@click.command(
+    context_settings={'help_option_names': ['-h', '--help']},
+    help='Sync versioned Danbooru tag history into the target Hugging Face dataset repository. '
+         'The command walks daily tag snapshots, materializes calendar-organized parquet history, '
+         'and uploads refreshed monthly and README artifacts to the repository.',
+)
+@click.option(
+    '-r', '--repository',
+    type=str,
+    envvar='REMOTE_REPOSITORY_DB_CH_TAGS_VRAW',
+    required=True,
+    show_envvar=True,
+    help='Target Hugging Face dataset repository to read from and write to.',
+)
+@click.option(
+    '-U', '--site-username',
+    type=str,
+    envvar='DANBOORU_USERNAME',
+    default=None,
+    show_envvar=True,
+    help='Site username used for authenticated upstream requests.',
+)
+@click.option(
+    '-A', '--site-apikey',
+    type=str,
+    envvar='DANBOORU_APITOKEN',
+    default=None,
+    show_envvar=True,
+    help='Site API key used for authenticated upstream requests.',
+)
+def cli(repository: str, site_username: Optional[str], site_apikey: Optional[str]):
     logging.try_init_root(logging.INFO)
-    run_callable_from_cli(sync, defaults={
-        'repository': env_default('REMOTE_REPOSITORY_DB_CH_TAGS_VRAW'),
-        'site_username': env_default('DANBOORU_USERNAME', default=None),
-        'site_apikey': env_default('DANBOORU_APITOKEN', default=None),
-    })
+    return sync(repository=repository, site_username=site_username, site_apikey=site_apikey)
+
+
+if __name__ == '__main__':
+    cli()
