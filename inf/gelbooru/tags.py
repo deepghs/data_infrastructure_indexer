@@ -20,6 +20,8 @@ from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
+
 __site_url__ = 'https://gelbooru.com'
 
 
@@ -225,6 +227,7 @@ def _get_all_tag_aliases(session=None):
 
 def sync(repository: str, proxy_pool: Optional[str] = None, access_interval: Optional[float] = None,
          user_id: Optional[str] = None, api_key: Optional[str] = None):
+    """Sync Gelbooru tag and alias metadata into the target Hugging Face dataset repository."""
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
     if access_interval is not None:
@@ -270,8 +273,8 @@ if __name__ == '__main__':
     #     user_id=os.environ["GELBOORU_USER_ID"],
     #     api_key=os.environ["GELBOORU_API_KEY"],
     # ))
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_GB'],
-        user_id=os.environ["GELBOORU_USER_ID"],
-        api_key=os.environ["GELBOORU_API_KEY"],
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_GB'),
+        'user_id': env_default('GELBOORU_USER_ID'),
+        'api_key': env_default('GELBOORU_API_KEY'),
+    })

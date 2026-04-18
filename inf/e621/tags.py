@@ -15,6 +15,8 @@ from pyquery import PyQuery as pq
 from tqdm import tqdm
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
+
 
 def _get_latest_date_in_index(session: Optional[requests.Session] = None):
     session = session or get_requests_session()
@@ -32,6 +34,7 @@ def _get_latest_date_in_index(session: Optional[requests.Session] = None):
 
 
 def sync(repository: str):
+    """Sync official e621 db_export tables into the target Hugging Face dataset repository."""
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
@@ -78,6 +81,6 @@ def sync(repository: str):
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_E621'],
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_E621'),
+    })

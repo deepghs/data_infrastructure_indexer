@@ -20,6 +20,8 @@ from tqdm import tqdm
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
+
 
 def generate_calendar_markdown(f, minx, url_function, last_month_count: int = 12):
     today = datetime.now()
@@ -75,6 +77,7 @@ def get_year_and_quarter(time=None):
 
 
 def sync(repository: str, site_username: Optional[str] = None, site_apikey: Optional[str] = None, ):
+    """Sync versioned Danbooru tag exports into the target Hugging Face dataset repository."""
     delete_detached_cache()
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
@@ -249,8 +252,8 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_DB_CH_TAGS_VRAW'],
-        site_username=os.environ.get('DANBOORU_USERNAME'),
-        site_apikey=os.environ.get('DANBOORU_APITOKEN'),
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_DB_CH_TAGS_VRAW'),
+        'site_username': env_default('DANBOORU_USERNAME', default=None),
+        'site_apikey': env_default('DANBOORU_APITOKEN', default=None),
+    })

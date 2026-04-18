@@ -24,6 +24,7 @@ from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from tqdm import tqdm
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download, safe_download_archive_as_directory
 from inf.utils.session import srequest
 from .tags import _get_session, _get_tags_by_page
@@ -109,10 +110,11 @@ def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
         return []
 
 
-def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: float = 30,
+def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          deploy_span: float = 5 * 60, sync_mode: bool = False, no_recent: float = 60 * 60 * 24 * 15,
          max_part_rows: int = 2500000, sync_from_archives: bool = True,
          user_id: Optional[str] = None, api_key: Optional[str] = None, access_interval: Optional[float] = None):
+    """Sync Gelbooru post metadata into the target repository, optionally seeding from archives."""
     delete_detached_cache()
     start_time = time.time()
     hf_client = get_hf_client()
@@ -400,7 +402,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
             _yield_from_blind(),
         )
     for item in source:
-        if start_time + max_time_limit < time.time():
+        if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
         if item['change'] and item['change'] + no_recent > time.time():
             logging.info(f'Post {item["id"]} too recent, skipped.')
@@ -494,14 +496,14 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_GB'],
-        max_time_limit=(60 * 5 + 45) * 60,
-        sync_mode=True,
-        sync_from_archives=True,
-        no_recent=60 * 60 * 24 * 0,
-        deploy_span=5 * 60,
-        max_part_rows=3000000,
-        user_id=os.environ["GELBOORU_USER_ID"],
-        api_key=os.environ["GELBOORU_API_KEY"],
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_GB'),
+        'max_time_limit': (60 * 5 + 45) * 60,
+        'sync_mode': True,
+        'sync_from_archives': True,
+        'no_recent': 60 * 60 * 24 * 0,
+        'deploy_span': 5 * 60,
+        'max_part_rows': 3000000,
+        'user_id': env_default('GELBOORU_USER_ID'),
+        'api_key': env_default('GELBOORU_API_KEY'),
+    })

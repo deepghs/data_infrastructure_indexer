@@ -19,6 +19,7 @@ from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_direct
 from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 
 mimetypes.add_type('image/webp', '.webp')
@@ -70,9 +71,10 @@ def _get_posts(session: Optional[requests.Session] = None,
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
-         max_time_limit: float = 50 * 60, max_part_rows: int = 1000000,
+         max_time_limit: Optional[float] = 50 * 60, max_part_rows: int = 1000000,
          site_username: Optional[str] = None, site_apikey: Optional[str] = None,
          sync_mode: bool = True):
+    """Sync e621 post metadata into the target Hugging Face dataset repository."""
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
@@ -265,7 +267,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             return
 
         while True:
-            if start_time + max_time_limit < time.time():
+            if max_time_limit is not None and start_time + max_time_limit < time.time():
                 break
             has_new_items = False
             for item in _get_posts(session=session, after_id=max_id):
@@ -282,7 +284,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         min_id = None
         no_new_count = 0
         while True:
-            if start_time + max_time_limit < time.time():
+            if max_time_limit is not None and start_time + max_time_limit < time.time():
                 break
             has_new_item, has_item = False, False
             for item in _get_posts(session=session, before_id=min_id):
@@ -307,7 +309,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         # yield from _iter_up()
 
     for post in _iter_posts():
-        if start_time + max_time_limit < time.time():
+        if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
         if post['id'] in exist_ids:
             logging.warning(f'Post {post["id"]!r} already exist, skipped.')
@@ -401,12 +403,12 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_E621'],
-        deploy_span=5 * 60,
-        max_time_limit=5.5 * 60 * 60,
-        max_part_rows=1000000,
-        site_username=os.environ.get('E621_USERNAME'),
-        site_apikey=os.environ.get('E621_APITOKEN'),
-        sync_mode=True,
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_E621'),
+        'deploy_span': 5 * 60,
+        'max_time_limit': 5.5 * 60 * 60,
+        'max_part_rows': 1000000,
+        'site_username': env_default('E621_USERNAME', default=None),
+        'site_apikey': env_default('E621_APITOKEN', default=None),
+        'sync_mode': True,
+    })

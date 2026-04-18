@@ -17,6 +17,8 @@ from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
+
 __site_url__ = 'https://rule34.xxx'
 
 _RATE = Rate(55, int(math.ceil(Duration.SECOND * 60)))
@@ -187,6 +189,7 @@ def _get_all_tag_aliases(user_id: Optional[str] = None, api_key: Optional[str] =
 
 
 def sync(repository: str, user_id: Optional[str] = None, api_key: Optional[str] = None):
+    """Sync Rule34 tag metadata into the target Hugging Face dataset repository."""
     hf_fs = get_hf_fs(hf_token=os.environ['HF_TOKEN'])
     hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN'])
 
@@ -220,8 +223,8 @@ def sync(repository: str, user_id: Optional[str] = None, api_key: Optional[str] 
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_RX'],
-        user_id=os.environ['RULE34_USER_ID'],
-        api_key=os.environ['RULE34_API_KEY'],
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_RX'),
+        'user_id': env_default('RULE34_USER_ID'),
+        'api_key': env_default('RULE34_API_KEY'),
+    })

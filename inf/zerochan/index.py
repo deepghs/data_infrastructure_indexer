@@ -20,6 +20,7 @@ from hfutils.utils import number_to_tag
 from pyrate_limiter import Duration, Limiter, Rate
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 from .base import get_session
 from .tag import _get_tag_info
@@ -36,9 +37,10 @@ def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
     return resp.json()
 
 
-def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: float = 30,
+def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          tag_refresh_time: float = 15 * 24 * 60 * 60, deploy_span: float = 5 * 60, sync_mode: bool = False,
          try_failed_ids_first: bool = False, start_from_id: Optional[int] = None):
+    """Sync Zerochan post metadata and tag state into the target Hugging Face dataset repository."""
     start_time = time.time()
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
@@ -134,7 +136,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
         ptc = 0
         while True:
-            if start_time + max_time_limit < time.time():
+            if max_time_limit is not None and start_time + max_time_limit < time.time():
                 return
 
             params = {'json': '1'}
@@ -277,7 +279,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
                 offset=min_id if not sync_mode else start_from_id,
                 prefix_ids=sorted(failed_ids, reverse=True) if try_failed_ids_first else [],
         ):
-            if start_time + max_time_limit < time.time():
+            if max_time_limit is not None and start_time + max_time_limit < time.time():
                 break
             # if post_id in pre_ids and sync_mode:
             #     break
@@ -329,12 +331,12 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_ZC'],
-        max_time_limit=5.7 * 60 * 60,
-        deploy_span=5 * 60,
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_ZC'),
+        'max_time_limit': 5.7 * 60 * 60,
+        'deploy_span': 5 * 60,
         # try_failed_ids_first=random.random() < 0.0625,
-        try_failed_ids_first=False,
-        sync_mode=True,
-        start_from_id=None,
-    )
+        'try_failed_ids_first': False,
+        'sync_mode': True,
+        'start_from_id': None,
+    })

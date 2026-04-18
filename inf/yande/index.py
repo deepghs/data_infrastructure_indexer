@@ -3,6 +3,7 @@ import mimetypes
 import os
 import re
 import time
+from typing import Optional
 
 import httpx
 import numpy as np
@@ -16,6 +17,7 @@ from hfutils.utils import get_requests_session, number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 
 mimetypes.add_type('image/webp', '.webp')
@@ -30,8 +32,9 @@ _TAG_TYPES = {
 }
 
 
-def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: float = 30,
+def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          deploy_span: float = 5 * 60, sync_mode: bool = False, no_recent: float = 60 * 60 * 24 * 15):
+    """Sync Yande.re post metadata into the target Hugging Face dataset repository."""
     start_time = time.time()
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
@@ -210,7 +213,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
         start_page = max(min(max_page - len(records) // page_size + 5, max_page), 1)
         page_range = range(start_page, 0, -1)
     for page in page_range:
-        if start_time + max_time_limit < time.time():
+        if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
 
         for item in _get_page(page):
@@ -257,7 +260,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_YR'],
-        max_time_limit=5.5 * 60 * 60,
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_YR'),
+        'max_time_limit': 5.5 * 60 * 60,
+    })

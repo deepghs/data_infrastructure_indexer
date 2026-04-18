@@ -1,20 +1,28 @@
 import os
+from typing import Optional
 
 from hfutils.operate import get_hf_client
 
+from inf.utils.cli import env_default, run_callable_from_cli
 
-def repo_squash():
+
+def repo_squash(repository: Optional[str] = None, public_repository: Optional[str] = None,
+                public_repository_4m: Optional[str] = None, min_commits: int = 500,
+                commit_message: str = 'Squashed!'):
+    """Super-squash the configured Zerochan dataset repositories when history grows too large."""
     hf_client = get_hf_client()
-    remote_repo = os.environ.get('REMOTE_REPOSITORY_ZC')
-    if len(hf_client.list_repo_commits(repo_id=remote_repo, repo_type='dataset')) >= 500:
-        hf_client.super_squash_history(repo_id=remote_repo, repo_type='dataset', commit_message='Squashed!')
-    remote_repo = os.environ.get('REMOTE_REPOSITORY_ZC_PUBLIC')
-    if len(hf_client.list_repo_commits(repo_id=remote_repo, repo_type='dataset')) >= 500:
-        hf_client.super_squash_history(repo_id=remote_repo, repo_type='dataset', commit_message='Squashed!')
-    remote_repo = os.environ.get('REMOTE_REPOSITORY_ZC_PUBLIC_4M')
-    if len(hf_client.list_repo_commits(repo_id=remote_repo, repo_type='dataset')) >= 500:
-        hf_client.super_squash_history(repo_id=remote_repo, repo_type='dataset', commit_message='Squashed!')
+    for remote_repo in [repository, public_repository, public_repository_4m]:
+        if remote_repo and len(hf_client.list_repo_commits(repo_id=remote_repo, repo_type='dataset')) >= min_commits:
+            hf_client.super_squash_history(
+                repo_id=remote_repo,
+                repo_type='dataset',
+                commit_message=commit_message,
+            )
 
 
 if __name__ == '__main__':
-    repo_squash()
+    run_callable_from_cli(repo_squash, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_ZC', default=None),
+        'public_repository': env_default('REMOTE_REPOSITORY_ZC_PUBLIC', default=None),
+        'public_repository_4m': env_default('REMOTE_REPOSITORY_ZC_PUBLIC_4M', default=None),
+    })

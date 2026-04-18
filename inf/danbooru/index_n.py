@@ -16,15 +16,17 @@ from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 
 mimetypes.add_type('image/webp', '.webp')
 
 
 def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 * 60,
-         max_time_limit: float = 50 * 60, sync_mode: bool = False,
+         max_time_limit: Optional[float] = 50 * 60, sync_mode: bool = False,
          site_username: Optional[str] = None, site_apikey: Optional[str] = None,
          site_golden: bool = False):
+    """Sync Danbooru post metadata into the target Hugging Face dataset repository."""
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
@@ -171,7 +173,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             page += 1
 
     for item in _iter_items():
-        if start_time + max_time_limit < time.time():
+        if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
         # if item['id'] in exist_ids:
         #     logging.info(f'Post {item["id"]!r} already crawled, skipped.')
@@ -197,13 +199,13 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_DB_N'],
-        max_time_limit=5.7 * 60 * 60,
-        upload_time_span=30,
-        deploy_span=5 * 60,
-        sync_mode=True,
-        site_username=os.environ.get('DANBOORU_USERNAME'),
-        site_apikey=os.environ.get('DANBOORU_APITOKEN'),
-        site_golden=True,
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_DB_N'),
+        'max_time_limit': 5.7 * 60 * 60,
+        'upload_time_span': 30,
+        'deploy_span': 5 * 60,
+        'sync_mode': True,
+        'site_username': env_default('DANBOORU_USERNAME', default=None),
+        'site_apikey': env_default('DANBOORU_APITOKEN', default=None),
+        'site_golden': True,
+    })

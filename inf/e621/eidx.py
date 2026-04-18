@@ -7,10 +7,12 @@ from hbutils.system import TemporaryDirectory
 from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
 from hfutils.utils import hf_fs_path, parse_hf_fs_path
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 
 
 def sync(repository: str, exist_repo: str):
+    """Build the e621 previous-existence index from the historical dataset repository."""
     hf_client = get_hf_client()
     hf_fs = get_hf_fs()
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
@@ -65,7 +67,7 @@ def sync(repository: str, exist_repo: str):
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_E621'],
-        exist_repo=os.environ['REMOTE_REPOSITORY_E621_2024'],
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_E621'),
+        'exist_repo': env_default('REMOTE_REPOSITORY_E621_2024'),
+    })

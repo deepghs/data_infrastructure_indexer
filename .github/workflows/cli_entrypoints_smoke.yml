@@ -1,0 +1,39 @@
+#file: noinspection YAMLSchemaValidation
+name: CLI Entrypoints Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 20
+          submodules: recursive
+      - name: Set up system dependencies on Linux
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree cloc wget curl make zip git-lfs
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.8'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade flake8 setuptools wheel twine
+          pip install -r requirements.txt -r requirements-test.txt
+      - name: Run CLI smoke tests
+        env:
+          CI: 'true'
+          PYTHONPATH: .
+        shell: bash
+        run: |
+          python -m compileall inf test
+          pytest -sv test/utils/test_cli.py test/entrypoints/test_cli_entrypoints.py

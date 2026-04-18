@@ -20,6 +20,7 @@ from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.utils import srequest
 
+from inf.utils.cli import env_default, run_callable_from_cli
 from inf.utils.safe import safe_hf_hub_download
 from .tags import _get_session, _LIMITER
 
@@ -35,9 +36,10 @@ _TAG_TYPES = {
 }
 
 
-def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: float = 30,
+def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          deploy_span: float = 5 * 60, no_recent: float = 60 * 60 * 24 * 15,
          max_part_rows: int = 1500000, user_id: Optional[str] = None, api_key: Optional[str] = None):
+    """Sync Rule34 post metadata into the target Hugging Face dataset repository."""
     start_time = time.time()
     delete_detached_cache()
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
@@ -250,7 +252,7 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
     source = _yield_from_newest()
     for item in source:
-        if start_time + max_time_limit < time.time():
+        if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
         if item['change'] and item['change'] + no_recent > time.time():
             logging.info(f'Post {item["id"]} too recent, skipped.')
@@ -295,12 +297,12 @@ def sync(repository: str, max_time_limit: float = 50 * 60, upload_time_span: flo
 
 if __name__ == '__main__':
     logging.try_init_root(logging.INFO)
-    sync(
-        repository=os.environ['REMOTE_REPOSITORY_RX'],
-        max_time_limit=5.5 * 60 * 60,
-        no_recent=60 * 60 * 24 * 0,
-        deploy_span=3 * 60,
-        max_part_rows=2000000,
-        user_id=os.environ['RULE34_USER_ID'],
-        api_key=os.environ['RULE34_API_KEY'],
-    )
+    run_callable_from_cli(sync, defaults={
+        'repository': env_default('REMOTE_REPOSITORY_RX'),
+        'max_time_limit': 5.5 * 60 * 60,
+        'no_recent': 60 * 60 * 24 * 0,
+        'deploy_span': 3 * 60,
+        'max_part_rows': 2000000,
+        'user_id': env_default('RULE34_USER_ID'),
+        'api_key': env_default('RULE34_API_KEY'),
+    })
