@@ -11,14 +11,14 @@ from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hfutils.cache import delete_detached_cache
-from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from pyrate_limiter import Rate, Duration, Limiter
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
-from inf.utils.safe import safe_hf_hub_download
+from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
 
 mimetypes.add_type('image/webp', '.webp')
 
@@ -111,7 +111,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 print(f'', file=f)
 
             limiter.try_acquire('hf upload limit')
-            upload_directory_as_directory(
+            safe_upload_directory_as_directory(
                 repo_id=repository,
                 repo_type='dataset',
                 local_directory=td,

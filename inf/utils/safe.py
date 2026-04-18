@@ -8,7 +8,7 @@ import requests
 from ditk import logging
 from hbutils.system import TemporaryDirectory
 from hfutils.archive import archive_unpack
-from hfutils.operate import get_hf_client
+from hfutils.operate import get_hf_client, upload_directory_as_directory
 from hfutils.operate.download import is_local_file_ready
 from huggingface_hub import HfApi, constants
 from huggingface_hub.utils import HfHubHTTPError, LocalEntryNotFoundError, FileMetadataError, reset_sessions
@@ -69,6 +69,21 @@ def _is_retryable_download_error(err: Exception) -> bool:
         return 'Force download failed due to the above error.' in str(err)
 
     return False
+
+
+def _get_error_status_code(err: Exception) -> Optional[int]:
+    response = getattr(err, 'response', None)
+    if response is not None:
+        return getattr(response, 'status_code', None)
+
+    if isinstance(err, httpx.HTTPStatusError):
+        return err.response.status_code
+
+    return None
+
+
+def _is_retryable_upload_error(err: Exception) -> bool:
+    return _get_error_status_code(err) == 504
 
 
 def safe_hf_hub_download(
@@ -212,8 +227,55 @@ def safe_download_archive_as_directory(local_directory: str, repo_id: str, file_
     raise AssertionError('Unreachable code reached in safe_download_archive_as_directory.')
 
 
+def safe_upload_directory_as_directory(
+        local_directory: str,
+        repo_id: str,
+        path_in_repo: str,
+        pattern: Optional[str] = None,
+        repo_type: Literal['dataset', 'model', 'space'] = 'dataset',
+        revision: str = 'main',
+        message: Optional[str] = None,
+        time_suffix: bool = True,
+        clear: bool = False,
+        hf_token: Optional[str] = None,
+        operation_chunk_size: Optional[int] = None,
+        upload_timespan: float = 5.0,
+        max_retries: int = 3,
+        retry_wait_time: float = 5.0,
+):
+    for attempt in range(1, max_retries + 1):
+        try:
+            return upload_directory_as_directory(
+                local_directory=local_directory,
+                repo_id=repo_id,
+                path_in_repo=path_in_repo,
+                pattern=pattern,
+                repo_type=repo_type,
+                revision=revision,
+                message=message,
+                time_suffix=time_suffix,
+                clear=clear,
+                hf_token=hf_token,
+                operation_chunk_size=operation_chunk_size,
+                upload_timespan=upload_timespan,
+            )
+        except Exception as err:
+            if attempt >= max_retries or not _is_retryable_upload_error(err):
+                raise
+
+            logging.warning(
+                f'HF upload {repo_id!r}/{path_in_repo!r} failed with gateway timeout '
+                f'on attempt {attempt}/{max_retries} - {err!r}, retry later.'
+            )
+            reset_sessions()
+            time.sleep(retry_wait_time)
+
+    raise AssertionError('Unreachable code reached in safe_upload_directory_as_directory.')
+
+
 __all__ = [
     'safe_hf_hub_download',
     'safe_download_file_to_file',
     'safe_download_archive_as_directory',
+    'safe_upload_directory_as_directory',
 ]
