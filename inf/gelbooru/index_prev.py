@@ -114,7 +114,8 @@ def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          deploy_span: float = 5 * 60, sync_mode: bool = False, no_recent: float = 60 * 60 * 24 * 15,
          max_part_rows: int = 2500000, sync_from_archives: bool = True,
-         user_id: Optional[str] = None, api_key: Optional[str] = None, access_interval: Optional[float] = None):
+         user_id: Optional[str] = None, api_key: Optional[str] = None, access_interval: Optional[float] = None,
+         start_from_id: Optional[int] = None):
     """Sync Gelbooru post metadata into the target repository, optionally seeding from archives."""
     delete_detached_cache()
     start_time = time.time()
@@ -341,6 +342,9 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             has_update = True
 
     min_newest_id: Optional[int] = None
+    if start_from_id is not None:
+        min_newest_id = start_from_id
+        logging.info(f'Start from explicit post id boundary {start_from_id!r}.')
 
     def _yield_from_newest():
         nonlocal min_newest_id
@@ -578,9 +582,15 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     default=None,
     help='Minimum interval between site API requests. Use none or unlimited to disable the limit.',
 )
+@click.option(
+    '-I', '--start-from-id',
+    type=int,
+    default=None,
+    help='Start scanning below this explicit Gelbooru post ID boundary.',
+)
 def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, deploy_span: float,
         sync_mode: bool, no_recent: float, max_part_rows: int, sync_from_archives: bool,
-        user_id: str, api_key: str, access_interval: Optional[float]):
+        user_id: str, api_key: str, access_interval: Optional[float], start_from_id: Optional[int]):
     logging.try_init_root(logging.INFO)
     return sync(
         repository=repository,
@@ -594,6 +604,7 @@ def cli(repository: str, max_time_limit: Optional[float], upload_time_span: floa
         user_id=user_id,
         api_key=api_key,
         access_interval=access_interval,
+        start_from_id=start_from_id,
     )
 
 
