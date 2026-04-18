@@ -26,7 +26,7 @@ mimetypes.add_type('image/webp', '.webp')
 def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 * 60,
          max_time_limit: Optional[float] = 50 * 60, sync_mode: bool = False,
          site_username: Optional[str] = None, site_apikey: Optional[str] = None,
-         site_golden: bool = False):
+         site_golden: bool = False, start_from_id: Optional[int] = None):
     """Sync Danbooru post metadata into the target Hugging Face dataset repository."""
     start_time = time.time()
     delete_detached_cache()
@@ -136,6 +136,10 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
     min_image_id: Optional[int] = None
     q_tags = []
     image_id_lower_bound: int = 7306660
+    if start_from_id is not None:
+        min_image_id = start_from_id
+        q_tags = [f'id:<{min_image_id}']
+        logging.info(f'Start from explicit image id boundary {start_from_id!r}.')
 
     def _iter_items():
         nonlocal min_image_id, q_tags
@@ -261,8 +265,15 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
     show_default=True,
     help='Enable the Danbooru golden-account request mode.',
 )
+@click.option(
+    '-i', '--start-from-id',
+    type=int,
+    default=None,
+    help='Start scanning below this explicit Danbooru post ID boundary.',
+)
 def cli(repository: str, upload_time_span: float, deploy_span: float, max_time_limit: Optional[float],
-        sync_mode: bool, site_username: Optional[str], site_apikey: Optional[str], site_golden: bool):
+        sync_mode: bool, site_username: Optional[str], site_apikey: Optional[str], site_golden: bool,
+        start_from_id: Optional[int]):
     logging.try_init_root(logging.INFO)
     return sync(
         repository=repository,
@@ -273,6 +284,7 @@ def cli(repository: str, upload_time_span: float, deploy_span: float, max_time_l
         site_username=site_username,
         site_apikey=site_apikey,
         site_golden=site_golden,
+        start_from_id=start_from_id,
     )
 
 
