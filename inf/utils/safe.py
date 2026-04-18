@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import time
 from typing import Dict, Optional, Union, Literal
@@ -72,12 +73,25 @@ def _is_retryable_download_error(err: Exception) -> bool:
 
 
 def _get_error_status_code(err: Exception) -> Optional[int]:
-    response = getattr(err, 'response', None)
-    if response is not None:
-        return getattr(response, 'status_code', None)
+    seen = set()
+    current = err
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
 
-    if isinstance(err, httpx.HTTPStatusError):
-        return err.response.status_code
+        response = getattr(current, 'response', None)
+        if response is not None:
+            status_code = getattr(response, 'status_code', None)
+            if status_code is not None:
+                return status_code
+
+        if isinstance(current, httpx.HTTPStatusError):
+            return current.response.status_code
+
+        current = getattr(current, '__cause__', None) or getattr(current, '__context__', None)
+
+    matched = re.search(r'(^|\D)(?P<status>504)(\D|$)', str(err))
+    if matched and 'gateway timeout' in str(err).lower():
+        return int(matched.group('status'))
 
     return None
 
