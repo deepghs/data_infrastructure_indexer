@@ -5,10 +5,10 @@ import click
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
-from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import hf_fs_path, parse_hf_fs_path
 
-from inf.utils.safe import safe_hf_hub_download
+from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
 
 
 def sync(repository: str, exist_repo: str):
@@ -49,14 +49,14 @@ def sync(repository: str, exist_repo: str):
         with open(os.path.join(td, 'previous_exist_ids.json'), 'w') as f:
             json.dump(sorted(exist_ids), f)
 
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=td,
             path_in_repo='.',
             message=f'Sync {plural_word(len(exist_ids), "previous exist id")} from {exist_repo!r}',
         )
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=exist_repo,
             repo_type='dataset',
             local_directory=td,

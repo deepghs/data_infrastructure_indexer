@@ -16,13 +16,13 @@ from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hfutils.cache import delete_detached_cache
-from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from pyrate_limiter import Duration, Limiter, Rate
 from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
-from inf.utils.safe import safe_hf_hub_download
+from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
 from .base import get_session
 from .tag import _get_tag_info
 
@@ -263,7 +263,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
                     print('', file=f)
 
             limiter.try_acquire('hf upload limit')
-            upload_directory_as_directory(
+            safe_upload_directory_as_directory(
                 repo_id=repository,
                 repo_type='dataset',
                 local_directory=td,

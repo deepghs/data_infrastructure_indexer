@@ -13,7 +13,7 @@ import requests.exceptions
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory, urlsplit
-from hfutils.operate import upload_directory_as_directory, get_hf_client, get_hf_fs
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import get_requests_session
 from pyquery import PyQuery as pq
 from pyrate_limiter import Rate, Limiter, Duration
@@ -21,6 +21,7 @@ from tqdm import tqdm
 from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
+from inf.utils.safe import safe_upload_directory_as_directory
 
 __site_url__ = 'https://gelbooru.com'
 
@@ -254,7 +255,7 @@ def sync(repository: str, proxy_pool: Optional[str] = None, access_interval: Opt
         df_tags.to_parquet(os.path.join(td, 'index_tags.parquet'), engine='pyarrow', index=False)
         df_tag_aliases.to_parquet(os.path.join(td, 'index_tag_aliases.parquet'), engine='pyarrow', index=False)
 
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=td,

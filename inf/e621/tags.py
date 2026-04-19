@@ -9,12 +9,14 @@ import requests
 from ditk import logging
 from hbutils.string import plural_word, humanize
 from hbutils.system import urlsplit, TemporaryDirectory
-from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import get_requests_session, download_file
 from natsort import natsorted
 from pyquery import PyQuery as pq
 from tqdm import tqdm
 from waifuc.utils import srequest
+
+from inf.utils.safe import safe_upload_directory_as_directory
 
 
 def _get_latest_date_in_index(session: Optional[requests.Session] = None):
@@ -69,7 +71,7 @@ def sync(repository: str):
                 mps[tab_name] = len(df)
                 df.to_parquet(os.path.join(upload_dir, f'index_{tab_name}.parquet'), engine='pyarrow', index=False)
 
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=upload_dir,

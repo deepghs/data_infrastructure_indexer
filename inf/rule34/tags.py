@@ -11,11 +11,13 @@ import pandas as pd
 import xmltodict
 from ditk import logging
 from hbutils.system import TemporaryDirectory
-from hfutils.operate import upload_directory_as_directory, get_hf_fs, get_hf_client
+from hfutils.operate import get_hf_fs, get_hf_client
 from pyquery import PyQuery as pq
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 from waifuc.utils import srequest
+
+from inf.utils.safe import safe_upload_directory_as_directory
 
 __site_url__ = 'https://rule34.xxx'
 
@@ -209,7 +211,7 @@ def sync(repository: str, user_id: Optional[str] = None, api_key: Optional[str] 
         df_tags.to_parquet(os.path.join(td, 'index_tags.parquet'), index=False)
         df_tag_aliases.to_parquet(os.path.join(td, 'index_tag_aliases.parquet'), index=False)
 
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=td,

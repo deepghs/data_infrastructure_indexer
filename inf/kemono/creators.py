@@ -7,8 +7,10 @@ import requests
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
-from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import get_requests_session
+
+from inf.utils.safe import safe_upload_directory_as_directory
 
 from .base import _ROOT
 
@@ -41,7 +43,7 @@ def sync(repository: str):
     with TemporaryDirectory() as td:
         df.to_parquet(os.path.join(td, 'creators.parquet'), engine='pyarrow', index=False)
 
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=td,
