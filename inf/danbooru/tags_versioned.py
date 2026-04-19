@@ -14,12 +14,14 @@ from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
 from hfutils.cache import delete_detached_cache
-from hfutils.operate import get_hf_client, get_hf_fs, upload_directory_as_directory
+from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from huggingface_hub import hf_hub_url
 from tqdm import tqdm
 from waifuc.source import DanbooruSource
 from waifuc.utils import srequest
+
+from inf.utils.safe import safe_upload_directory_as_directory
 
 
 def generate_calendar_markdown(f, minx, url_function, last_month_count: int = 12):
@@ -238,7 +240,7 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
                 last_month_count=12,
             )
 
-        upload_directory_as_directory(
+        safe_upload_directory_as_directory(
             repo_id=repository,
             repo_type='dataset',
             local_directory=upload_dir,
