@@ -14,13 +14,13 @@ from hbutils.system import TemporaryDirectory
 from hfutils.archive import get_archive_type
 from hfutils.cache import delete_detached_cache
 from hfutils.operate import get_hf_client, get_hf_fs
-from hfutils.utils import get_requests_session, number_to_tag
+from hfutils.utils import number_to_tag
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
-from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
+from inf.utils.session import get_requests_session, srequest
 from .base import _ROOT
 
 mimetypes.add_type('image/webp', '.webp')

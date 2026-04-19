@@ -19,10 +19,10 @@ from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from natsort import natsorted
 from pyrate_limiter import Rate, Duration, Limiter
-from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
+from inf.utils.session import srequest
 from .tags import _get_session, _LIMITER
 
 mimetypes.add_type('image/webp', '.webp')

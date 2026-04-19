@@ -8,8 +8,8 @@ from ditk import logging
 from hbutils.system import urlsplit
 from markdownify import MarkdownConverter, chomp
 from pyquery import PyQuery as pq
-from waifuc.utils import srequest
 
+from inf.utils.session import srequest
 from .base import _ROOT, get_session
 
 

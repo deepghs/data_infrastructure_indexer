@@ -14,14 +14,13 @@ from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory, urlsplit
 from hfutils.operate import get_hf_client, get_hf_fs
-from hfutils.utils import get_requests_session
 from pyquery import PyQuery as pq
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
-from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_upload_directory_as_directory
+from inf.utils.session import get_requests_session, srequest
 
 __site_url__ = 'https://gelbooru.com'
 

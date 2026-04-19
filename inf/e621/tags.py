@@ -10,13 +10,13 @@ from ditk import logging
 from hbutils.string import plural_word, humanize
 from hbutils.system import urlsplit, TemporaryDirectory
 from hfutils.operate import get_hf_client, get_hf_fs
-from hfutils.utils import get_requests_session, download_file
+from hfutils.utils import download_file
 from natsort import natsorted
 from pyquery import PyQuery as pq
 from tqdm import tqdm
-from waifuc.utils import srequest
 
 from inf.utils.safe import safe_upload_directory_as_directory
+from inf.utils.session import get_requests_session, srequest
 
 
 def _get_latest_date_in_index(session: Optional[requests.Session] = None):

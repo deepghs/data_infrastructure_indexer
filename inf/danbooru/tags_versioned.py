@@ -19,9 +19,9 @@ from hfutils.utils import number_to_tag
 from huggingface_hub import hf_hub_url
 from tqdm import tqdm
 from waifuc.source import DanbooruSource
-from waifuc.utils import srequest
 
 from inf.utils.safe import safe_upload_directory_as_directory
+from inf.utils.session import srequest
 
 
 def generate_calendar_markdown(f, minx, url_function, last_month_count: int = 12):

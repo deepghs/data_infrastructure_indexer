@@ -8,7 +8,7 @@ import requests
 from random_user_agent.params import SoftwareName, OperatingSystem
 from random_user_agent.user_agent import UserAgent
 from requests.adapters import HTTPAdapter, Retry
-from requests.exceptions import RequestException
+from requests.exceptions import RequestException, TooManyRedirects
 
 DEFAULT_TIMEOUT = 60  # seconds
 
@@ -122,20 +122,29 @@ def srequest(session: Union[requests.Session, List[requests.Session]], method, u
     :rtype: requests.Response
     """
     resp = None
-    for _ in range(max_retries):
+    for attempt in range(max_retries):
+        current_sleep_time = sleep_time * (2 ** attempt)
         if isinstance(session, (list, tuple)):
             _session = random.choice(session)
         else:
             _session = session
         try:
             resp = _session.request(method, url, **kwargs)
+        except TooManyRedirects:
+            raise
         except RequestException as err:
-            logging.error(f'Request error - {err!r}')
-            time.sleep(sleep_time)
+            logging.warning(
+                f'Request error ({attempt + 1}/{max_retries}) for {method} {url!r} - {err!r}, '
+                f'sleep for {current_sleep_time:.1f}s.'
+            )
+            time.sleep(current_sleep_time)
         else:
-            if resp.status_code // 10 == 52:
-                logging.info(f'Request HTTP error - {resp!r}.')
-                time.sleep(sleep_time)
+            if resp.status_code // 100 == 5:
+                logging.warning(
+                    f'Request HTTP error ({attempt + 1}/{max_retries}) for {method} {url!r} - '
+                    f'{resp!r}, sleep for {current_sleep_time:.1f}s.'
+                )
+                time.sleep(current_sleep_time)
             else:
                 break
     assert resp is not None, f'Request failed for {max_retries} time(s).'

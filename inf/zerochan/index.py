@@ -19,10 +19,10 @@ from hfutils.cache import delete_detached_cache
 from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from pyrate_limiter import Duration, Limiter, Rate
-from waifuc.utils import srequest
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
+from inf.utils.session import srequest
 from .base import get_session
 from .tag import _get_tag_info
 

@@ -15,9 +15,9 @@ from hfutils.operate import get_hf_fs, get_hf_client
 from pyquery import PyQuery as pq
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
-from waifuc.utils import srequest
 
 from inf.utils.safe import safe_upload_directory_as_directory
+from inf.utils.session import srequest
 
 __site_url__ = 'https://rule34.xxx'
 
