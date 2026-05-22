@@ -195,7 +195,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 no_item_cnt = 0
             else:
                 no_item_cnt = no_item_cnt + 1
-            if sync_mode and no_item_cnt >= 100:
+            if sync_mode and no_item_cnt >= 10:
                 return
             if min_image_id and min_image_id < image_id_lower_bound:
                 return
