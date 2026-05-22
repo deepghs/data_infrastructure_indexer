@@ -44,6 +44,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tree cloc wget curl make zip
           sudo apt-get install -y git-lfs
+      - name: Add 8G swap
+        if: ${{ env.OS_NAME == 'Linux' }}
+        shell: bash
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
       - name: Set up python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
         with:
@@ -63,6 +72,11 @@ jobs:
           tree .
           cloc inf
           cloc test
+      - name: Start memory monitor
+        shell: bash
+        run: |
+          nohup bash -c 'while true; do echo "=== $(date -Is) ==="; free -m; sleep 30; done' > mem.log 2>&1 &
+          echo $! > mem-monitor.pid
       - name: Run unittest
         env:
           CI: 'true'
@@ -74,3 +88,24 @@ jobs:
         shell: bash
         run: |
           python -m inf.danbooru.index_n
+      - name: Stop memory monitor
+        if: always()
+        shell: bash
+        run: |
+          if [ -f mem-monitor.pid ]; then
+            kill "$(cat mem-monitor.pid)" 2>/dev/null || true
+            rm -f mem-monitor.pid
+          fi
+          if [ -f mem.log ]; then
+            echo "=== Peak memory usage ==="
+            awk '/^Mem:/ { used = $3; if (used+0 > peak+0) peak = used } END { print "peak used MB:", peak }' mem.log || true
+            echo "=== Last 20 samples ==="
+            tail -n 80 mem.log || true
+          fi
+      - name: Upload memory log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mem-log
+          path: mem.log
+          if-no-files-found: ignore

@@ -1,8 +1,9 @@
+import gc
 import math
 import mimetypes
 import os
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 import click
 import numpy as np
@@ -53,29 +54,48 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             hf_client,
             repo_id=repository,
             repo_type='dataset',
-            filename='records.parquet'
+            filename='records.parquet',
         )).replace(np.NaN, None)
-        d_records = {item['id']: item for item in df_records.to_dict('records')}
+        id2url: Dict[int, Optional[str]] = dict(zip(
+            df_records['id'].tolist(),
+            df_records['file_url'].tolist(),
+        ))
+        gc.collect()
     else:
-        d_records = {}
+        df_records = None
+        id2url = {}
 
+    new_records: Dict[int, dict] = {}
     _last_update, has_update = None, False
-    _total_count = len(d_records)
+    _total_count = 0 if df_records is None else len(df_records)
 
     def _deploy(force=False):
-        nonlocal _last_update, has_update, _total_count
+        nonlocal df_records, new_records, _last_update, has_update, _total_count
 
         if not has_update:
             return
         if not force and _last_update is not None and _last_update + deploy_span > time.time():
             return
 
+        df_new = pd.DataFrame(list(new_records.values()))
+        if df_records is not None and len(df_records) > 0:
+            df_combined = pd.concat([df_new, df_records], ignore_index=True, sort=False)
+            df_combined = df_combined.drop_duplicates(subset=['id'], keep='first')
+        else:
+            df_combined = df_new
+        df_combined = df_combined.sort_values(by=['id'], ascending=[False]).reset_index(drop=True)
+
+        previous_count = 0 if df_records is None else len(df_records)
+        if len(df_combined) < previous_count:
+            raise RuntimeError(
+                f'Refusing to deploy: combined record count {len(df_combined)} '
+                f'is smaller than previous {previous_count}. Aborting to protect remote data.'
+            )
+
         with TemporaryDirectory() as td:
             table_parquet_file = os.path.join(td, 'records.parquet')
             os.makedirs(os.path.dirname(table_parquet_file), exist_ok=True)
-            df_records = pd.DataFrame(list(d_records.values()))
-            df_records = df_records.sort_values(by=['id'], ascending=[False])
-            df_records.to_parquet(table_parquet_file, engine='pyarrow', index=False)
+            df_combined.to_parquet(table_parquet_file, engine='pyarrow', index=False)
 
             with open(os.path.join(td, 'README.md'), 'w') as f:
                 print('---', file=f)
@@ -92,7 +112,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 print('- anime', file=f)
                 print('- not-for-all-audiences', file=f)
                 print('size_categories:', file=f)
-                print(f'- {number_to_tag(len(df_records))}', file=f)
+                print(f'- {number_to_tag(len(df_combined))}', file=f)
                 print('annotations_creators:', file=f)
                 print('- no-annotation', file=f)
                 print('source_datasets:', file=f)
@@ -102,9 +122,9 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
 
                 print('## Records', file=f)
                 print(f'', file=f)
-                df_records_shown = df_records[:50][
+                df_records_shown = df_combined[:50][
                     ['id', 'image_width', 'image_height', 'rating', 'mimetype', 'file_size', 'file_url']]
-                print(f'{plural_word(len(df_records), "record")} in total. '
+                print(f'{plural_word(len(df_combined), "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
                 print(df_records_shown.to_markdown(index=False), file=f)
@@ -116,12 +136,17 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
-                message=f'Adding {plural_word(len(df_records) - _total_count, "new record")} into index',
+                message=f'Adding {plural_word(len(df_combined) - _total_count, "new record")} into index',
                 hf_token=os.environ['HF_TOKEN'],
             )
-            has_update = False
-            _last_update = time.time()
-            _total_count = len(df_records)
+
+        df_records = df_combined
+        new_records = {}
+        has_update = False
+        _last_update = time.time()
+        _total_count = len(df_records)
+        del df_new, df_combined
+        gc.collect()
 
     if site_apikey and site_username:
         logging.info(f'Initializing session with username {site_username!r} and api_key {site_apikey!r} ...')
@@ -159,7 +184,7 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             }, auth=source.auth)
             has_new_items = False
             for pitem in resp.json():
-                if pitem['id'] not in d_records or d_records[pitem['id']]['file_url'] != pitem.get('file_url'):
+                if pitem['id'] not in id2url or id2url[pitem['id']] != pitem.get('file_url'):
                     yield pitem
                     if pitem.get('file_url'):
                         has_new_items = True
@@ -188,14 +213,15 @@ def sync(repository: str, upload_time_span: float = 30, deploy_span: float = 5 *
             continue
 
         logging.info(f'Post {item["id"]!r} confirmed!')
-        if item['id'] in d_records:
+        if item['id'] in id2url:
             logging.info(f'Post {item["id"]!r} already exist, but has file_url changed.')
         del item['media_asset']
         if item.get('file_url'):
             item['mimetype'], _ = mimetypes.guess_type(item['file_url'])
         else:
             item['mimetype'] = None
-        d_records[item['id']] = item
+        new_records[item['id']] = item
+        id2url[item['id']] = item.get('file_url')
         has_update = True
         _deploy()
 
