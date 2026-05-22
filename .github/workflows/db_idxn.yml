@@ -44,15 +44,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tree cloc wget curl make zip
           sudo apt-get install -y git-lfs
-      - name: Add 8G swap
+      - name: Add 12G swap
         if: ${{ env.OS_NAME == 'Linux' }}
         shell: bash
         run: |
-          sudo fallocate -l 8G /swapfile
+          echo "=== Before ==="
+          free -h
+          swapon --show || true
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=12288 status=none
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+          echo "=== After ==="
           free -h
+          swapon --show
       - name: Set up python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
         with:
