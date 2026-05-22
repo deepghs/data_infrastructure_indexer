@@ -2,7 +2,7 @@ google-re2
 pyxurls
 gdown==5.1.0
 urlobject
-huggingface_hub[cli]>=0.23
+huggingface_hub[cli]>=0.23,<1
 di-toolkit
 click
 pandas
@@ -34,3 +34,4 @@ numpy
 natsort
 pytimeparse>=1.1.8
 google-re2<1.1.20250722
+pyrate-limiter<4
