@@ -37,9 +37,14 @@ This job is expected to run on a GitHub-hosted free runner, where free disk is t
 constraint rather than CPU or memory:
 
 * Volume boundaries are planned up-front from ``file_size`` in the index, which keeps a volume
-  near ``--max-volume-bytes``. Measured headroom for the 5 GB default: a runner reports 145 GB
-  total and holds steady at 107 GB free through a five-volume run, peaking at 38 GB used, and
-  the upload path streams from the tar rather than copying it, so peak usage is the tar itself.
+  near ``--max-volume-bytes``. Disk is not what bounds the size: a runner reports 145 GB total
+  and peaked at 41 GB used through a run of 5 GB volumes, and the upload path streams from the
+  tar rather than copying it, so peak usage is the tar itself.
+* What does bound it is the job timeout. The run stops fetching at ``--max-time-limit`` and then
+  has to upload whatever is in hand, so the last volume's upload must fit in the gap between
+  that limit and the workflow's own timeout. Measured upload rates vary five-fold, 13 to
+  161 MB/s, so the gap has to be costed at the low end: a 50 minute gap at 13 MB/s tops out
+  near 39 GB, which is where the 20 GB budget and 24 GB ceiling come from.
 * That plan is only an estimate, so a second, authoritative check runs against what actually
   lands on disk: once a tar passes ``--max-volume-hard-bytes``, or free space drops under
   ``--min-free-disk``, the volume is sealed on the spot, indexed, uploaded and deleted, and
@@ -382,10 +387,10 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 
 
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
-         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 4000,
-         max_volume_bytes: int = 5 * 1024 ** 3, max_volume_hard_bytes: int = 6656 * 1024 ** 2,
+         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 20000,
+         max_volume_bytes: int = 20 * 1024 ** 3, max_volume_hard_bytes: int = 24 * 1024 ** 3,
          download_workers: int = 16, session_pool_size: int = 0,
-         min_free_disk: int = 20 * 1024 ** 3, upload_time_span: float = 30,
+         min_free_disk: int = 40 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
          max_volumes: Optional[int] = None, retire_after: int = 2,
          initial_rate: float = 4.0, max_rate: float = 64.0,
@@ -639,15 +644,20 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                 'md5': item['md5'],
                                 'file_url': item['file_url'],
                             })
-                            # Safety valve. The planner trusts file_size from the index; this
-                            # checks what actually landed on disk, so a stale or wrong index
-                            # cannot grow the tar past what the runner can hold.
+                            # Safety valves, checked against what actually landed on disk rather
+                            # than what the index promised.
                             if volume_bytes[0] >= max_volume_hard_bytes:
                                 sealed[0] = (f'tar reached {volume_bytes[0] / 1024 ** 3:.2f} GB, '
                                              f'over the {max_volume_hard_bytes / 1024 ** 3:.2f} GB ceiling')
                             elif get_free_disk_bytes(stage_dir) < min_free_disk:
                                 sealed[0] = (f'free disk fell below '
                                              f'{min_free_disk / 1024 ** 3:.2f} GB')
+                            elif max_time_limit is not None and time.time() > start_time + max_time_limit:
+                                # Without this the deadline is only tested between volumes, so a
+                                # volume that started just under it runs to completion and pushes
+                                # the job past its own timeout. Sealing here decouples volume size
+                                # from the schedule: whatever has been fetched is published now.
+                                sealed[0] = 'run deadline reached mid-volume'
                             if sealed[0]:
                                 logging.warning(f'Sealing volume #{max_volume_id} early - '
                                                 f'{sealed[0]}; remaining posts move to the next volume.')
@@ -782,7 +792,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-f', '--max-volume-files',
     type=int,
-    default=4000,
+    default=20000,
     show_default=True,
     help='Maximum number of entries packed into one tar volume. High enough that the byte budget '
          'is normally what closes a volume.',
@@ -790,14 +800,14 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-b', '--max-volume-bytes',
     type=int,
-    default=5 * 1024 ** 3,
+    default=20 * 1024 ** 3,
     show_default=True,
     help='Approximate byte budget for one tar volume.',
 )
 @click.option(
     '-H', '--max-volume-hard-bytes',
     type=int,
-    default=6656 * 1024 ** 2,
+    default=24 * 1024 ** 3,
     show_default=True,
     help='Ceiling on the bytes actually written into a tar. Crossing it seals the volume '
          'immediately, uploads it, and moves the rest of the batch to the next volume.',
@@ -821,7 +831,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-d', '--min-free-disk',
     type=int,
-    default=20 * 1024 ** 3,
+    default=40 * 1024 ** 3,
     show_default=True,
     help='Stop before starting a new volume when free disk falls below this many bytes.',
 )
