@@ -11,29 +11,30 @@ Cloudflare was actively challenging, 20 of 23 were served normally. Only ``chrom
 The working set drifts and is not monotonic in version -- ``chrome120`` fails while the older
 ``chrome110`` succeeds -- so nothing here pins a value.
 
-What the connection costs
-=========================
+What reuse does and does not buy
+================================
 
-The classifier judges a *connection*, not a request. Everything sent over an accepted
-connection is served; a fresh handshake is a fresh verdict. Measured on a GitHub runner with a
-32-slot pool drawn at random, where a worker almost never reused a session: 0.84 rejections per
-delivered image, and 4.7 seconds of worker time per 2 MB file of which under 5% was transfer.
-The same code with one long-lived session per worker was 1.3-1.6x faster locally, with no
-rejections at all.
+It is tempting to assume the classifier judges a connection, so that riding an accepted one
+avoids further verdicts. Simulation says otherwise. Run 31185766987 delivered 1974 images with
+0.84 rejections each and 4.7 seconds of worker time per 2 MB file. A model where an established
+connection is never re-judged reproduces 0.12 rejections per image, seven times too few; the
+observed figure only appears when requests are rejected at a roughly fixed rate whether or not
+the connection is already up. **Rejection here is per request.**
 
-So this pool optimises for **staying on a connection that already works**:
+Reuse is still worth having, for the handshake and TCP slow start it avoids rather than for any
+verdict it dodges. So the pool keeps connections warm where it is free to do so, and does not
+pretend that is the main lever:
 
-* Slots go back to the same worker whenever free, keeping a session hot instead of scattering
-  requests across the pool. Reuse also escapes TCP slow start, which a fresh connection
-  otherwise pays on every single file.
-* A slot is retired only after consecutive failures. Discarding a connection costs a handshake
-  and a fresh verdict, which is worse than riding out one rejection.
+* Slots go back to the same worker whenever free, so a hot connection stays hot.
+* A slot is retired only after consecutive failures. One rejection carries no information, and
+  discarding a working connection costs a handshake and a slow-start ramp.
 * Fingerprints are scored by a decaying average rather than a lifetime tally, so a target that
   stops working is demoted within a few draws. Draws are epsilon-greedy: mostly from what is
   working now, occasionally from everything, so a recovered target can come back.
 """
 import random
 import threading
+import typing
 from typing import Dict, List, Optional, Tuple
 
 from curl_cffi import requests as cffi_requests
@@ -43,14 +44,65 @@ __site_url__ = 'https://danbooru.donmai.us'
 
 DEFAULT_TIMEOUT = 60.0
 
-#: Browser fingerprints to draw from, all verified against cdn.donmai.us on 2026-08-07. Kept
+#: Fingerprints we would like to use, all verified against cdn.donmai.us on 2026-08-07. Kept
 #: wide on purpose: the pool weights them by recent success, so a few that stop working cost
 #: little, while a narrow list leaves nowhere to go when one does.
-IMPERSONATE_LADDER: List[str] = [
+PREFERRED_IMPERSONATES: List[str] = [
     'chrome146', 'chrome145', 'chrome136', 'chrome133a', 'chrome131', 'chrome124', 'chrome123',
     'chrome119', 'chrome116', 'chrome110', 'chrome107', 'chrome104', 'chrome101', 'chrome100',
     'edge101', 'firefox147', 'firefox144', 'firefox135', 'firefox133', 'chrome131_android',
 ]
+
+
+def _supported_impersonates() -> Optional[set]:
+    """
+    Ask the installed ``curl_cffi`` which impersonation targets it actually has.
+
+    The available set is a property of the installed build, and the build is a property of the
+    interpreter: Python 3.8 caps ``curl_cffi`` at 0.9.0, which knows 29 targets, while 0.16.0
+    knows 53. Naming a target the local build has never heard of raises ``ImpersonateError`` at
+    session construction, which looks like a network fault to everything downstream.
+
+    :returns: Supported target names, or None when the build cannot be interrogated.
+    :rtype: Optional[set]
+    """
+    try:
+        from curl_cffi.requests.impersonate import BrowserTypeLiteral
+        return set(typing.get_args(BrowserTypeLiteral))
+    except Exception:
+        pass
+    try:
+        from curl_cffi.requests import BrowserType
+        return {entry.value for entry in BrowserType}
+    except Exception:
+        return None
+
+
+def _build_ladder() -> List[str]:
+    """
+    Narrow :data:`PREFERRED_IMPERSONATES` to what this build supports.
+
+    :returns: Usable fingerprint names.
+    :rtype: List[str]
+    """
+    supported = _supported_impersonates()
+    if not supported:
+        return list(PREFERRED_IMPERSONATES)
+    usable = [imp for imp in PREFERRED_IMPERSONATES if imp in supported]
+    dropped = [imp for imp in PREFERRED_IMPERSONATES if imp not in supported]
+    if dropped:
+        logging.info(f'Impersonation targets unavailable in this curl_cffi build, dropped: '
+                     f'{", ".join(dropped)}.')
+    if not usable:
+        # Nothing preferred is available. Rather than fail, take what the build does have.
+        usable = sorted(supported - {'chrome', 'edge', 'firefox', 'safari'})
+        logging.warning(f'No preferred impersonation target is available; '
+                        f'falling back to {len(usable)} build-provided targets.')
+    return usable
+
+
+#: Fingerprints actually usable here, resolved once against the installed build.
+IMPERSONATE_LADDER: List[str] = _build_ladder()
 
 #: Weight of the newest outcome when updating a fingerprint's score. High enough that a target
 #: which stops working is demoted within a handful of draws.
@@ -82,13 +134,26 @@ def get_danbooru_session(impersonate: Optional[str] = None, timeout: float = DEF
     :returns: A ready-to-use session.
     :rtype: curl_cffi.requests.Session
     """
-    impersonate = impersonate or random.choice(IMPERSONATE_LADDER)
-    kwargs = dict(impersonate=impersonate, timeout=timeout)
-    if proxy_pool:
-        kwargs['proxies'] = {'http': proxy_pool, 'https': proxy_pool}
-    session = cffi_requests.Session(**kwargs)
-    session.headers.update({'Referer': f'{__site_url__}/'})
-    return session
+    for _ in range(len(IMPERSONATE_LADDER) + 1):
+        chosen = impersonate or random.choice(IMPERSONATE_LADDER)
+        kwargs = dict(impersonate=chosen, timeout=timeout)
+        if proxy_pool:
+            kwargs['proxies'] = {'http': proxy_pool, 'https': proxy_pool}
+        try:
+            session = cffi_requests.Session(**kwargs)
+        except Exception as err:
+            if 'not supported' not in str(err):
+                raise
+            # The static filter should have caught this, but a build that reports one set and
+            # accepts another would otherwise fail every download as a network error.
+            logging.warning(f'Impersonation target {chosen!r} rejected by curl_cffi, dropping it.')
+            if chosen in IMPERSONATE_LADDER and len(IMPERSONATE_LADDER) > 1:
+                IMPERSONATE_LADDER.remove(chosen)
+            impersonate = None
+            continue
+        session.headers.update({'Referer': f'{__site_url__}/'})
+        return session
+    raise RuntimeError('No usable impersonation target is available in this curl_cffi build.')
 
 
 class DanbooruSessionPool:
