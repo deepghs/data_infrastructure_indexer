@@ -32,6 +32,10 @@ on:
         description: 'Concurrent download threads'
         required: false
         default: '16'
+      use_brightdata:
+        description: 'Route downloads through the Bright Data proxy pool (default off; the direct route is faster)'
+        required: false
+        default: 'false'
   # Target cadence is every 8 hours. Kept commented until the job has proven itself,
   # matching how the other schedules in this repository are staged back in.
   #  schedule:
@@ -131,11 +135,21 @@ jobs:
           SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '0' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
           DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}
+          USE_BRIGHTDATA: ${{ github.event.inputs.use_brightdata || 'false' }}
+          BRD_PROXY_URL: ${{ secrets.BRD_PROXY_URL }}
+          BRD_API_KEY: ${{ secrets.BRD_API_KEY }}
+          BRD_ZONE: ${{ secrets.BRD_ZONE }}
         shell: bash
         run: |
           EXTRA=()
           if [ -n "$MAX_VOLUMES" ]; then
             EXTRA+=(--max-volumes "$MAX_VOLUMES")
+          fi
+          # Opt-in only. The direct route is metered but never blocked, while shared datacenter
+          # proxy exits are refused outright by the CDN, so proxying is the slower default.
+          if [ "$USE_BRIGHTDATA" = "true" ] && [ -n "$BRD_PROXY_URL" ]; then
+            echo "Routing downloads through the Bright Data proxy pool."
+            export PP_DB="$BRD_PROXY_URL"
           fi
           python -m inf.danbooru.quick_dl \
             --max-time-limit "$MAX_TIME_LIMIT" \

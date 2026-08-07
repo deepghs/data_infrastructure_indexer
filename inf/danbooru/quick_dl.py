@@ -85,6 +85,7 @@ from tqdm import tqdm
 from inf.utils.download import AdaptiveRateLimiter, download_file, parallel_call, \
     get_free_disk_bytes, log_disk_usage
 from inf.utils.duration import duration_type
+from inf.utils.brightdata import BrightDataError, ensure_proxy_access
 from inf.utils.safe import configure_hf_http_backend, safe_hf_hub_download, \
     safe_upload_directory_as_directory
 from .base import DanbooruSessionPool, __site_url__  # noqa: F401 - re-exported for callers
@@ -387,7 +388,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
          max_volumes: Optional[int] = None, retire_after: int = 2,
          initial_rate: float = 4.0, max_rate: float = 64.0,
          cf_retries: int = 6, cf_retry_wait: float = 2.0,
-         max_blocked_ratio: float = 0.3, proxy_pool: Optional[str] = None):
+         max_blocked_ratio: float = 0.3, proxy_pool: Optional[str] = None,
+         brd_api_key: Optional[str] = None, brd_zone: Optional[str] = None):
     """
     Download missing Danbooru originals into append-only tar volumes in the staging repository.
 
@@ -435,8 +437,14 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :param max_blocked_ratio: Abort the run when this fraction of a volume fails for reasons
         other than the post being gone upstream.
     :type max_blocked_ratio: float
-    :param proxy_pool: Proxy URL applied to every upstream request.
+    :param proxy_pool: Proxy URL applied to every upstream request. Off by default: the direct
+        route is rate limited but never blocked, while shared datacenter proxy addresses are
+        blocked outright by the CDN.
     :type proxy_pool: Optional[str]
+    :param brd_api_key: Bright Data API key, used only to allowlist this host's address.
+    :type brd_api_key: Optional[str]
+    :param brd_zone: Bright Data zone to allowlist into.
+    :type brd_zone: Optional[str]
     """
     start_time = time.time()
     # Before any hub call: an untimed request against a stalled endpoint blocks for a quarter
@@ -475,6 +483,18 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     # reachable through a warmed-up HTTP/2 session. See inf/danbooru/base.py.
     # Sized against the workers, not far above them: extra slots only dilute connection
     # reuse, and a hot connection is the single biggest lever on throughput here.
+    if proxy_pool:
+        # A Bright Data zone only serves allowlisted client addresses, and a runner's address is
+        # different every job. The refusal reports the address, so the run can add its own.
+        try:
+            if not ensure_proxy_access(proxy_pool, api_key=brd_api_key, zone=brd_zone):
+                logging.warning('Proxy is not usable; continuing over the direct route.')
+                proxy_pool = None
+        except BrightDataError as err:
+            logging.warning(f'Proxy setup failed, continuing over the direct route - {err}')
+            proxy_pool = None
+    logging.info(f'Egress: {"proxy pool" if proxy_pool else "direct"}.')
+
     pool = DanbooruSessionPool(size=session_pool_size or download_workers + 4,
                                retire_after=retire_after, proxy_pool=proxy_pool)
     # The site meters requests and says so with 429. Discover the rate it will serve rather
@@ -880,7 +900,25 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     envvar='PP_DB',
     default=None,
     show_envvar=True,
-    help='Proxy URL applied to every upstream request.',
+    help='Proxy URL applied to every upstream request. Leave unset to go direct, which is the '
+         'faster route: it is metered but never blocked, whereas shared datacenter proxy exits '
+         'are refused outright by the CDN.',
+)
+@click.option(
+    '--brd-api-key',
+    type=str,
+    envvar='BRD_API_KEY',
+    default=None,
+    show_envvar=True,
+    help='Bright Data API key, used only to add this host to the zone allowlist.',
+)
+@click.option(
+    '--brd-zone',
+    type=str,
+    envvar='BRD_ZONE',
+    default=None,
+    show_envvar=True,
+    help='Bright Data zone to allowlist this host into.',
 )
 def cli(repository: str, src_repository: str, src_revision: str, max_time_limit: Optional[float],
         max_volume_files: int, max_volume_bytes: int, max_volume_hard_bytes: int,
@@ -888,7 +926,8 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
         max_volumes: Optional[int], initial_rate: float, max_rate: float,
         retire_after: int, cf_retries: int, cf_retry_wait: float,
-        max_blocked_ratio: float, proxy_pool: Optional[str]):
+        max_blocked_ratio: float, proxy_pool: Optional[str],
+        brd_api_key: Optional[str], brd_zone: Optional[str]):
     logging.try_init_root(logging.INFO)
     return sync(
         repository=repository,
@@ -912,6 +951,8 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         cf_retry_wait=cf_retry_wait,
         max_blocked_ratio=max_blocked_ratio,
         proxy_pool=proxy_pool,
+        brd_api_key=brd_api_key,
+        brd_zone=brd_zone,
     )
 
 

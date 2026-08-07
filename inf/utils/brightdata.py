@@ -41,8 +41,42 @@ IP_FORBIDDEN_CODE = 'client_10030'
 _IP_IN_MESSAGE = re.compile(r'request:\s*(?P<ip>\d{1,3}(?:\.\d{1,3}){3})')
 
 
+_PROXY_URL = re.compile(r'^(?P<scheme>\w+)://(?P<user>[^:@/]+):(?P<password>[^@/]+)@(?P<host>.+)$')
+
+
 class BrightDataError(Exception):
     """Raised when the proxy cannot be made usable."""
+
+
+def with_session(proxy_url: str, session_id: str) -> str:
+    """
+    Pin a proxy URL to one egress address by tagging the username with a session id.
+
+    Without a tag Bright Data draws a different exit address for every single request, so a
+    per-address rate limit downstream is never actually escaped: each request is a fresh
+    lottery, and a rejection teaches you nothing reusable. Tagging ``-session-<id>`` holds one
+    exit address for as long as that id is used, which turns the proxy into a pool of
+    addressable identities. Verified: four requests on one tag all exited from the same
+    address, and a different tag exited from a different one.
+
+    :param proxy_url: Base proxy URL of the form ``scheme://user:password@host:port``.
+    :type proxy_url: str
+    :param session_id: Identifier to pin on. Letters and digits only, by Bright Data's rules.
+    :type session_id: str
+    :returns: Proxy URL bound to that session.
+    :rtype: str
+    :raises BrightDataError: When the URL cannot be parsed.
+    """
+    matched = _PROXY_URL.match(proxy_url)
+    if not matched:
+        raise BrightDataError(f'Cannot add a session id to proxy URL {proxy_url.split("@")[-1]!r}: '
+                              f'expected scheme://user:password@host:port.')
+    user = matched.group('user')
+    if '-session-' in user:
+        user = user.split('-session-')[0]
+    safe = re.sub(r'[^0-9a-zA-Z]', '', session_id) or 'x'
+    return (f'{matched.group("scheme")}://{user}-session-{safe}:'
+            f'{matched.group("password")}@{matched.group("host")}')
 
 
 def probe_proxy(proxy_url: str, timeout: float = 30.0):
@@ -56,8 +90,10 @@ def probe_proxy(proxy_url: str, timeout: float = 30.0):
     :returns: Tuple of (usable, blocked address or None, detail string).
     :rtype: Tuple[bool, Optional[str], str]
     """
+    # trust_env stays on deliberately. If the host reaches the internet through a local proxy,
+    # Bright Data sees that proxy's egress rather than this machine, and the probe has to travel
+    # the same path the real downloads will or it allowlists an address nothing else uses.
     session = get_requests_session(max_retries=1, timeout=timeout)
-    session.trust_env = False
     proxies = {'http': proxy_url, 'https': proxy_url}
     try:
         resp = session.get(PROBE_URL, proxies=proxies, timeout=timeout)
@@ -100,7 +136,8 @@ def allowlist_ip(api_key: str, ip: str, zone: Optional[str] = None, timeout: flo
         json=payload,
         timeout=timeout,
     )
-    if resp.status_code not in (200, 201):
+    # The reference documents 201, but the live API answers 204 for an accepted addition.
+    if resp.status_code // 100 != 2:
         raise BrightDataError(f'Allowlisting {ip} in zone {zone!r} failed with '
                               f'HTTP {resp.status_code}: {resp.text[:300]}')
     logging.info(f'Allowlisted {ip} for Bright Data zone {zone or "(all zones)"!r}.')

@@ -40,6 +40,8 @@ from typing import Dict, List, Optional, Tuple
 from curl_cffi import requests as cffi_requests
 from ditk import logging
 
+from inf.utils.brightdata import with_session
+
 __site_url__ = 'https://danbooru.donmai.us'
 
 DEFAULT_TIMEOUT = 60.0
@@ -117,7 +119,8 @@ EXPLORE_RATE = 0.05
 
 
 def get_danbooru_session(impersonate: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
-                         proxy_pool: Optional[str] = None) -> cffi_requests.Session:
+                         proxy_pool: Optional[str] = None,
+                         proxy_session: Optional[str] = None) -> cffi_requests.Session:
     """
     Build a browser-impersonating session for donmai.us.
 
@@ -131,9 +134,14 @@ def get_danbooru_session(impersonate: Optional[str] = None, timeout: float = DEF
     :type timeout: float
     :param proxy_pool: Proxy URL applied to every request.
     :type proxy_pool: Optional[str]
+    :param proxy_session: Bright Data session id to pin the proxy's exit address on. Without one
+        the proxy draws a new address per request, which never escapes a per-address rate limit.
+    :type proxy_session: Optional[str]
     :returns: A ready-to-use session.
     :rtype: curl_cffi.requests.Session
     """
+    if proxy_pool and proxy_session:
+        proxy_pool = with_session(proxy_pool, proxy_session)
     for _ in range(len(IMPERSONATE_LADDER) + 1):
         chosen = impersonate or random.choice(IMPERSONATE_LADDER)
         kwargs = dict(impersonate=chosen, timeout=timeout)
@@ -241,14 +249,18 @@ class DanbooruSessionPool:
                     self._reuse_misses += 1
             session = self._sessions[index]
             impersonate = None if session is not None else self._pick_impersonate()
+            generation = self._generations[index]
         self._affinity.slot = index
 
         if session is not None:
             with self._cv:
                 return index, self._generations[index], session
 
-        # Built outside the lock; constructing a session must not stall the other workers.
-        fresh = get_danbooru_session(impersonate=impersonate, **self._kwargs)
+        # Built outside the lock; constructing a session must not stall the other workers. The
+        # proxy session id carries the generation, so retiring a slot lands on a different exit
+        # address rather than the one that just refused us.
+        fresh = get_danbooru_session(impersonate=impersonate,
+                                     proxy_session=f's{index}g{generation}', **self._kwargs)
         with self._cv:
             if self._sessions[index] is None:
                 self._sessions[index] = fresh
