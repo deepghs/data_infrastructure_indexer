@@ -646,22 +646,27 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                 'file_url': item['file_url'],
                             })
                             # Safety valves, checked against what actually landed on disk rather
-                            # than what the index promised.
-                            if volume_bytes[0] >= max_volume_hard_bytes:
-                                sealed[0] = (f'tar reached {volume_bytes[0] / 1024 ** 3:.2f} GB, '
-                                             f'over the {max_volume_hard_bytes / 1024 ** 3:.2f} GB ceiling')
-                            elif get_free_disk_bytes(stage_dir) < min_free_disk:
-                                sealed[0] = (f'free disk fell below '
-                                             f'{min_free_disk / 1024 ** 3:.2f} GB')
-                            elif max_time_limit is not None and time.time() > start_time + max_time_limit:
-                                # Without this the deadline is only tested between volumes, so a
-                                # volume that started just under it runs to completion and pushes
-                                # the job past its own timeout. Sealing here decouples volume size
-                                # from the schedule: whatever has been fetched is published now.
-                                sealed[0] = 'run deadline reached mid-volume'
-                            if sealed[0]:
-                                logging.warning(f'Sealing volume #{max_volume_id} early - '
-                                                f'{sealed[0]}; remaining posts move to the next volume.')
+                            # than what the index promised. Only the transition is interesting:
+                            # workers already in flight when the valve tripped arrive here too,
+                            # and the deadline test stays true forever once it is true, so
+                            # re-evaluating would reprint the same line once per worker.
+                            if not sealed[0]:
+                                if volume_bytes[0] >= max_volume_hard_bytes:
+                                    sealed[0] = (f'tar reached {volume_bytes[0] / 1024 ** 3:.2f} GB, over '
+                                                 f'the {max_volume_hard_bytes / 1024 ** 3:.2f} GB ceiling')
+                                elif get_free_disk_bytes(stage_dir) < min_free_disk:
+                                    sealed[0] = f'free disk fell below {min_free_disk / 1024 ** 3:.2f} GB'
+                                elif max_time_limit is not None and \
+                                        time.time() > start_time + max_time_limit:
+                                    # Without this the deadline is only tested between volumes, so
+                                    # a volume that started just under it runs to completion and
+                                    # pushes the job past its own timeout. Sealing here decouples
+                                    # volume size from the schedule: what has been fetched ships.
+                                    sealed[0] = 'run deadline reached mid-volume'
+                                if sealed[0]:
+                                    logging.warning(
+                                        f'Sealing volume #{max_volume_id} early - {sealed[0]}; '
+                                        f'remaining posts move to the next volume.')
                     finally:
                         # Free the bytes immediately; in-flight footprint stays at roughly
                         # download_workers x average file size.
