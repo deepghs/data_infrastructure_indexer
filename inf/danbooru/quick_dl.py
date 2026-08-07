@@ -373,10 +373,11 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
          max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 1500,
          max_volume_bytes: int = 2 * 1024 ** 3, max_volume_hard_bytes: int = 3 * 1024 ** 3,
-         download_workers: int = 8, session_pool_size: int = 32,
+         download_workers: int = 24, session_pool_size: int = 0,
          min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
-         max_volumes: Optional[int] = None, cf_retries: int = 6, cf_retry_wait: float = 3.0,
+         max_volumes: Optional[int] = None, retire_after: int = 2,
+         cf_retries: int = 6, cf_retry_wait: float = 0.5,
          max_blocked_ratio: float = 0.3, proxy_pool: Optional[str] = None):
     """
     Download missing Danbooru originals into append-only tar volumes in the staging repository.
@@ -410,6 +411,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :type glob_exist_ids_file: str
     :param max_volumes: Stop after this many volumes. Useful for smoke runs.
     :type max_volumes: Optional[int]
+    :param retire_after: Consecutive rejections a session slot survives before being replaced.
+    :type retire_after: int
     :param cf_retries: Attempts per post before giving up, rebuilding the session between
         Cloudflare rejections.
     :type cf_retries: int
@@ -457,7 +460,10 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 
     # Cloudflare rejects plain HTTP/1.1 clients on every donmai.us host, so the CDN is only
     # reachable through a warmed-up HTTP/2 session. See inf/danbooru/base.py.
-    pool = DanbooruSessionPool(size=session_pool_size, proxy_pool=proxy_pool)
+    # Sized against the workers, not far above them: extra slots only dilute connection
+    # reuse, and a hot connection is the single biggest lever on throughput here.
+    pool = DanbooruSessionPool(size=session_pool_size or download_workers + 4,
+                               retire_after=retire_after, proxy_pool=proxy_pool)
 
     volumes_done = 0
     pending = candidates
@@ -560,9 +566,12 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                 except Exception as err:
                                     failure = err
                                     if _classify_error(err) == 'throttle':
-                                        pool.retire(slot, generation)
+                                        pool.report_failure(slot, generation)
+                                else:
+                                    # Reported inside the lease: once released, another worker
+                                    # may retire the slot and the credit would be lost.
+                                    pool.report_success(slot)
                             if failure is None:
-                                pool.report_success(slot)
                                 break
                             # Outside the lease: a sleeping worker must not also hold a slot.
                             wait = _handle(failure, item, attempt)
@@ -614,11 +623,11 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                          f'{stats["gone"]} gone, {stats["failed"]} failed, '
                          f'{stats["deferred"]} deferred, {stats["retry"]} retries, '
                          f'{volume_bytes[0] / 1024 ** 3:.2f} GB.')
-            fp_stats = pool.impersonate_stats()
-            if fp_stats:
-                worst = sorted(fp_stats.items(), key=lambda kv: kv[1][0] / max(sum(kv[1]), 1))[:4]
-                logging.info('Fingerprints (ok/rejected): ' + ', '.join(
-                    f'{imp}={ok}/{bad}' for imp, (ok, bad) in worst))
+            pool_stats = pool.stats()
+            logging.info(f'Sessions: {pool_stats["reuse_rate"]:.0%} slot reuse, '
+                         f'{pool_stats["total_ok"]} accepted / {pool_stats["total_bad"]} rejected; '
+                         + ', '.join(f'{imp}={ok}/{bad}@{score}'
+                                     for imp, ok, bad, score in pool_stats['fingerprints'][:5]))
             if stats['failed'] and stats['failed'] >= attempted * max_blocked_ratio:
                 # Sustained blocking wastes a volume id and a commit per attempt, so stop the run
                 # and let the next scheduled one start from a clean window.
@@ -748,16 +757,19 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-w', '--download-workers',
     type=int,
-    default=8,
+    default=24,
     show_default=True,
-    help='Number of concurrent download threads.',
+    help='Number of concurrent download threads. The site rejects a roughly fixed share of '
+         'requests regardless of connection reuse, so concurrency is the main lever on '
+         'throughput.',
 )
 @click.option(
     '-P', '--session-pool-size',
     type=int,
-    default=32,
+    default=0,
     show_default=True,
-    help='Number of independent warmed-up sessions to draw from at random.',
+    help='Session pool size. 0 sizes it just above the worker count, which is what keeps '
+         'connections hot; a much larger pool only dilutes reuse.',
 )
 @click.option(
     '-d', '--min-free-disk',
@@ -793,6 +805,15 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     help='Stop after publishing this many volumes. Intended for smoke runs.',
 )
 @click.option(
+    '-T', '--retire-after',
+    type=int,
+    default=2,
+    show_default=True,
+    help='Consecutive rejections a session slot survives before it is replaced. Dropping a '
+         'working connection costs a handshake and a fresh Cloudflare verdict, so one isolated '
+         'rejection is not worth acting on.',
+)
+@click.option(
     '-c', '--cf-retries',
     type=int,
     default=6,
@@ -802,9 +823,10 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-C', '--cf-retry-wait',
     type=duration_type(),
-    default=3.0,
+    default=0.5,
     show_default=True,
-    help='Base backoff after a Cloudflare rejection; grows with the attempt number.',
+    help='Base backoff after a Cloudflare rejection; grows with the attempt number. Kept small '
+         'because a rejection is not a signal to slow down here, only to try again.',
 )
 @click.option(
     '-B', '--max-blocked-ratio',
@@ -826,7 +848,7 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         max_volume_files: int, max_volume_bytes: int, max_volume_hard_bytes: int,
         download_workers: int, session_pool_size: int, min_free_disk: int,
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
-        max_volumes: Optional[int], cf_retries: int, cf_retry_wait: float,
+        max_volumes: Optional[int], retire_after: int, cf_retries: int, cf_retry_wait: float,
         max_blocked_ratio: float, proxy_pool: Optional[str]):
     logging.try_init_root(logging.INFO)
     return sync(
@@ -844,6 +866,7 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         include_non_image=include_non_image,
         glob_exist_ids_file=glob_exist_ids_file,
         max_volumes=max_volumes,
+        retire_after=retire_after,
         cf_retries=cf_retries,
         cf_retry_wait=cf_retry_wait,
         max_blocked_ratio=max_blocked_ratio,

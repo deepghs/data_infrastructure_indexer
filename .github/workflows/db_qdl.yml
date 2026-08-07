@@ -21,9 +21,9 @@ on:
         required: false
         default: '3221225472'
       session_pool_size:
-        description: 'Number of warmed-up sessions to draw from'
+        description: 'Session pool size (0 = workers + 4)'
         required: false
-        default: '32'
+        default: '0'
       max_volumes:
         description: 'Stop after this many volumes (empty means unlimited)'
         required: false
@@ -31,7 +31,7 @@ on:
       download_workers:
         description: 'Concurrent download threads'
         required: false
-        default: '8'
+        default: '24'
   # Target cadence is every 8 hours. Kept commented until the job has proven itself,
   # matching how the other schedules in this repository are staged back in.
   #  schedule:
@@ -127,9 +127,9 @@ jobs:
           MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '1500' }}
           MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '2147483648' }}
           MAX_VOLUME_HARD_BYTES: ${{ github.event.inputs.max_volume_hard_bytes || '3221225472' }}
-          SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '32' }}
+          SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '0' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
-          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '8' }}
+          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '24' }}
         shell: bash
         run: |
           EXTRA=()
