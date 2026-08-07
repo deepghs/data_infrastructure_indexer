@@ -21,6 +21,7 @@ The same API can create zones, rotate credentials and change plans, all of which
 money or break other users of the account.
 """
 import re
+import time
 from typing import Optional
 
 import requests
@@ -144,7 +145,8 @@ def allowlist_ip(api_key: str, ip: str, zone: Optional[str] = None, timeout: flo
 
 
 def ensure_proxy_access(proxy_url: str, api_key: Optional[str] = None, zone: Optional[str] = None,
-                        timeout: float = 30.0) -> bool:
+                        timeout: float = 30.0, propagation_timeout: float = 180.0,
+                        propagation_poll: float = 15.0) -> bool:
     """
     Make the proxy usable from this host, allowlisting the address if that is what is missing.
 
@@ -156,6 +158,11 @@ def ensure_proxy_access(proxy_url: str, api_key: Optional[str] = None, zone: Opt
     :type zone: Optional[str]
     :param timeout: Per-request timeout in seconds.
     :type timeout: float
+    :param propagation_timeout: How long to keep re-probing after a successful addition. The
+        proxy edge does not honour a new entry immediately.
+    :type propagation_timeout: float
+    :param propagation_poll: Seconds between those probes.
+    :type propagation_poll: float
     :returns: Whether the proxy is usable.
     :rtype: bool
     :raises BrightDataError: When the address is refused and cannot be added.
@@ -178,11 +185,24 @@ def ensure_proxy_access(proxy_url: str, api_key: Optional[str] = None, zone: Opt
         )
 
     allowlist_ip(api_key=api_key, ip=blocked, zone=zone, timeout=timeout)
-    usable, _, detail = probe_proxy(proxy_url, timeout=timeout)
-    if not usable:
-        raise BrightDataError(f'Allowlisted {blocked} but the proxy still refuses us - {detail}')
-    logging.info(f'Bright Data proxy usable after allowlisting {blocked}: {detail}')
-    return True
+
+    # An accepted addition is not immediately in force at the proxy edge; measured propagation
+    # took upwards of a minute. Re-probing straight away reports a refusal that has already been
+    # resolved, so wait it out instead of concluding the proxy is unusable.
+    deadline = time.time() + propagation_timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        usable, _, detail = probe_proxy(proxy_url, timeout=timeout)
+        if usable:
+            logging.info(f'Bright Data proxy usable after allowlisting {blocked} '
+                         f'(took {attempt} probe(s)): {detail}')
+            return True
+        if time.time() >= deadline:
+            raise BrightDataError(f'Allowlisted {blocked} but the proxy still refuses us after '
+                                  f'{propagation_timeout:.0f}s - {detail}')
+        logging.info(f'Allowlist not in force yet at the edge, probe {attempt}; waiting ...')
+        time.sleep(propagation_poll)
 
 
 __all__ = ['BrightDataError', 'probe_proxy', 'allowlist_ip', 'ensure_proxy_access']
