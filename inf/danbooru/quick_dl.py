@@ -84,7 +84,8 @@ from tqdm import tqdm
 
 from inf.utils.download import download_file, parallel_call, get_free_disk_bytes, log_disk_usage
 from inf.utils.duration import duration_type
-from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
+from inf.utils.safe import configure_hf_http_backend, safe_hf_hub_download, \
+    safe_upload_directory_as_directory
 from .base import DanbooruSessionPool, __site_url__  # noqa: F401 - re-exported for callers
 
 # Danbooru serves genuinely huge originals; the default bomb guard would reject valid posts.
@@ -422,6 +423,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :type proxy_pool: Optional[str]
     """
     start_time = time.time()
+    # Before any hub call: an untimed request against a stalled endpoint blocks for a quarter
+    # of an hour, which is most of a scheduled run.
+    configure_hf_http_backend()
     delete_detached_cache()
     hf_client = get_hf_client()
 

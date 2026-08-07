@@ -12,7 +12,8 @@ from hfutils.archive import archive_unpack
 from hfutils.operate import get_hf_client, upload_directory_as_directory
 from hfutils.operate.download import is_local_file_ready
 from huggingface_hub import HfApi, constants
-from huggingface_hub.utils import HfHubHTTPError, LocalEntryNotFoundError, FileMetadataError, reset_sessions
+from huggingface_hub.utils import HfHubHTTPError, LocalEntryNotFoundError, FileMetadataError, \
+    configure_http_backend, reset_sessions
 
 _RETRYABLE_STATUS_CODES = {
     408, 409, 425, 429,
@@ -97,7 +98,57 @@ def _get_error_status_code(err: Exception) -> Optional[int]:
 
 
 def _is_retryable_upload_error(err: Exception) -> bool:
-    return _get_error_status_code(err) == 504
+    status_code = _get_error_status_code(err)
+    if status_code is not None:
+        return status_code in _RETRYABLE_STATUS_CODES
+
+    # A dropped or timed-out connection says nothing about whether the commit was valid, so it
+    # deserves the same retry a gateway timeout gets. Without this a single stalled request
+    # ends a run that had already done all the work.
+    return isinstance(err, (
+        requests.ConnectionError,
+        requests.Timeout,
+        requests.RequestException,
+        httpx.TimeoutException,
+        httpx.NetworkError,
+        httpx.ProtocolError,
+        httpx.RemoteProtocolError,
+        httpx.RequestError,
+    ))
+
+
+def configure_hf_http_backend(timeout: float = 120.0, max_retries: int = 3):
+    """
+    Give every Hugging Face Hub HTTP call a timeout.
+
+    ``huggingface_hub`` issues its requests without one, so a hub endpoint that accepts a
+    connection and then stops responding leaves the caller blocked until the kernel gives up,
+    which takes roughly a quarter of an hour. That is long enough to consume a scheduled run.
+    One observed case: ``create_commit`` posts ``README.md`` to ``/api/validate-yaml`` before
+    uploading anything, and a stall there wasted sixteen minutes and then failed the job.
+
+    With a timeout in place the same stall surfaces in seconds as a retryable error, which
+    :func:`safe_upload_directory_as_directory` and friends already know how to handle.
+
+    :param timeout: Connect and read timeout in seconds. Generous enough for a slow but
+        progressing transfer, since the read timeout applies between bytes rather than to the
+        whole request.
+    :type timeout: float
+    :param max_retries: Transport-level retries for the underlying adapter.
+    :type max_retries: int
+    """
+    from .session import TimeoutHTTPAdapter
+
+    def _backend_factory() -> requests.Session:
+        session = requests.Session()
+        adapter = TimeoutHTTPAdapter(timeout=timeout, max_retries=max_retries,
+                                     pool_connections=32, pool_maxsize=32)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
+
+    configure_http_backend(_backend_factory)
+    logging.info(f'Hugging Face HTTP backend configured with a {timeout:.0f}s timeout.')
 
 
 def safe_hf_hub_download(
@@ -288,6 +339,7 @@ def safe_upload_directory_as_directory(
 
 
 __all__ = [
+    'configure_hf_http_backend',
     'safe_hf_hub_download',
     'safe_download_file_to_file',
     'safe_download_archive_as_directory',
