@@ -394,13 +394,13 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 
 
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
-         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 1000,
-         max_volume_bytes: int = 2 * 1024 ** 3, download_workers: int = 16,
-         min_free_disk: int = 8 * 1024 ** 3, upload_time_span: float = 30,
+         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 4000,
+         max_volume_bytes: int = 8 * 1024 ** 3, download_workers: int = 16,
+         min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
-         max_volumes: Optional[int] = None, cf_retries: int = 4, max_blocked_ratio: float = 0.3,
-         username: Optional[str] = None, apitoken: Optional[str] = None,
-         proxy_pool: Optional[str] = None):
+         max_volumes: Optional[int] = None, cf_retries: int = 6, cf_retry_wait: float = 3.0,
+         max_blocked_ratio: float = 0.3, username: Optional[str] = None,
+         apitoken: Optional[str] = None, proxy_pool: Optional[str] = None):
     """
     Download missing Danbooru originals into append-only tar volumes in the staging repository.
 
@@ -431,6 +431,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :param cf_retries: Attempts per post before giving up, rebuilding the session between
         Cloudflare rejections.
     :type cf_retries: int
+    :param cf_retry_wait: Base seconds to back off after a Cloudflare rejection; grows with the
+        attempt number.
+    :type cf_retry_wait: float
     :param max_blocked_ratio: Abort the run when this fraction of a volume fails for reasons
         other than the post being gone upstream.
     :type max_blocked_ratio: float
@@ -539,10 +542,13 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                 if status == 403 and attempt < cf_retries:
                                     # Cloudflare re-challenged us. This is never a property of the
                                     # post, so it must not blacklist the id; swap in a session with
-                                    # a fresh fingerprint and try again.
+                                    # a fresh fingerprint and try again. Back off first: challenges
+                                    # arrive in bursts while a run warms up, and retrying instantly
+                                    # just feeds the same burst.
                                     with lock:
                                         blocked[0] += 1
                                     holder.refresh(generation)
+                                    time.sleep(cf_retry_wait * attempt)
                                     continue
                                 logging.warning(f'Post {item["id"]} skipped - {err!r}')
                                 raise
@@ -674,14 +680,14 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-f', '--max-volume-files',
     type=int,
-    default=1000,
+    default=4000,
     show_default=True,
     help='Maximum number of entries packed into one tar volume.',
 )
 @click.option(
     '-b', '--max-volume-bytes',
     type=int,
-    default=2 * 1024 ** 3,
+    default=8 * 1024 ** 3,
     show_default=True,
     help='Approximate byte budget for one tar volume.',
 )
@@ -695,7 +701,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-d', '--min-free-disk',
     type=int,
-    default=8 * 1024 ** 3,
+    default=16 * 1024 ** 3,
     show_default=True,
     help='Stop before starting a new volume when free disk falls below this many bytes.',
 )
@@ -728,9 +734,16 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-c', '--cf-retries',
     type=int,
-    default=4,
+    default=6,
     show_default=True,
     help='Attempts per post, rebuilding the session between Cloudflare rejections.',
+)
+@click.option(
+    '-C', '--cf-retry-wait',
+    type=duration_type(),
+    default=3.0,
+    show_default=True,
+    help='Base backoff after a Cloudflare rejection; grows with the attempt number.',
 )
 @click.option(
     '-B', '--max-blocked-ratio',
@@ -767,8 +780,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 def cli(repository: str, src_repository: str, src_revision: str, max_time_limit: Optional[float],
         max_volume_files: int, max_volume_bytes: int, download_workers: int, min_free_disk: int,
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
-        max_volumes: Optional[int], cf_retries: int, max_blocked_ratio: float,
-        username: Optional[str], apitoken: Optional[str], proxy_pool: Optional[str]):
+        max_volumes: Optional[int], cf_retries: int, cf_retry_wait: float,
+        max_blocked_ratio: float, username: Optional[str], apitoken: Optional[str],
+        proxy_pool: Optional[str]):
     logging.try_init_root(logging.INFO)
     return sync(
         repository=repository,
@@ -784,6 +798,7 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         glob_exist_ids_file=glob_exist_ids_file,
         max_volumes=max_volumes,
         cf_retries=cf_retries,
+        cf_retry_wait=cf_retry_wait,
         max_blocked_ratio=max_blocked_ratio,
         username=username,
         apitoken=apitoken,

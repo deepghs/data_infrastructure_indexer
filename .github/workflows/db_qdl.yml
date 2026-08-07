@@ -11,11 +11,11 @@ on:
       max_volume_files:
         description: 'Maximum entries per tar volume'
         required: false
-        default: '1000'
+        default: '4000'
       max_volume_bytes:
         description: 'Approximate byte budget per tar volume'
         required: false
-        default: '2147483648'
+        default: '8589934592'
       max_volumes:
         description: 'Stop after this many volumes (empty means unlimited)'
         required: false
@@ -117,8 +117,8 @@ jobs:
           DANBOORU_USERNAME: ${{ secrets.DANBOORU_USERNAME }}
           DANBOORU_APITOKEN: ${{ secrets.DANBOORU_APITOKEN }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
-          MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '1000' }}
-          MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '2147483648' }}
+          MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '4000' }}
+          MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '8589934592' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
           DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}
         shell: bash
