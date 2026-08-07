@@ -32,12 +32,19 @@ on:
         description: 'Concurrent download threads'
         required: false
         default: '16'
+      initial_rate:
+        description: 'Requests/second the adaptive limiter starts from (10 suits the proxy route, 4 the direct one)'
+        required: false
+        default: '4'
       use_brightdata:
         description: 'Route downloads through the Bright Data proxy pool (default off; the direct route is faster)'
         required: false
         default: 'false'
-  # Target cadence is every 8 hours. Kept commented until the job has proven itself,
-  # matching how the other schedules in this repository are staged back in.
+  # Target cadence is every 8 hours, kept commented until the backlog has been worked down by
+  # hand. When it goes live it runs with the input defaults above, which are the direct-route
+  # configuration: 16 workers, no proxy, a limiter starting at 4 requests a second. The proxy
+  # route is roughly three times faster but trades a rate limit for a reputation one, so it stays
+  # an explicit choice rather than the unattended default.
   #  schedule:
   #    - cron: '17 */8 * * *'
 
@@ -135,6 +142,7 @@ jobs:
           SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '0' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
           DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}
+          INITIAL_RATE: ${{ github.event.inputs.initial_rate || '4' }}
           USE_BRIGHTDATA: ${{ github.event.inputs.use_brightdata || 'false' }}
           BRD_PROXY_URL: ${{ secrets.BRD_PROXY_URL }}
           BRD_API_KEY: ${{ secrets.BRD_API_KEY }}
@@ -158,6 +166,7 @@ jobs:
             --max-volume-hard-bytes "$MAX_VOLUME_HARD_BYTES" \
             --session-pool-size "$SESSION_POOL_SIZE" \
             --download-workers "$DOWNLOAD_WORKERS" \
+            --initial-rate "$INITIAL_RATE" \
             "${EXTRA[@]}"
       - name: Stop disk monitor
         if: always()
