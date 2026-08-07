@@ -151,7 +151,10 @@ class DanbooruSessionPool:
             session = self._sessions[index]
             self._sessions[index] = None
             self._generations[index] += 1
-            logging.info(f'Retiring session slot #{index} after an upstream rejection.')
+            # Debug, not info: a rejection here is routine and self-healing, and one line per
+            # event floods the log badly enough to make a working run look broken. The caller
+            # reports the aggregate instead.
+            logging.debug(f'Retiring session slot #{index} after an upstream rejection.')
         # Closing outside the lock: this slot is leased by the caller, so nobody else holds it.
         try:
             session.close()

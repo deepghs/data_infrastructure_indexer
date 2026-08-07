@@ -524,27 +524,38 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             deferred: List[dict] = []
             volume_bytes = [0]
             sealed = [None]
-            throttled = [0]
             lock = Lock()
+            # One counter per outcome. Successes are counted and never logged: a per-item
+            # success line adds nothing and drowns the lines that do need attention.
+            stats = {'ok': 0, 'gone': 0, 'failed': 0, 'retry': 0, 'deferred': 0}
 
             with tarfile.open(tar_file, 'w:') as tar:
                 def _handle(err, item, attempt, slot, generation):
                     kind = _classify_error(err)
+                    status = getattr(getattr(err, 'response', None), 'status_code', None)
                     if kind == 'permanent':
                         # Genuinely gone upstream: record it so later runs skip it.
                         with lock:
                             volume_bad.append(item['id'])
-                        logging.warning(f'Post {item["id"]} is gone - {err!r}')
+                            stats['gone'] += 1
+                        logging.warning(f'GONE post {item["id"]}: HTTP {status}.')
                         raise err
                     if attempt >= cf_retries:
-                        logging.warning(f'Post {item["id"]} skipped after {attempt} attempts - {err!r}')
+                        with lock:
+                            stats['failed'] += 1
+                        logging.warning(f'FAILED post {item["id"]} after {attempt} attempts '
+                                        f'({kind}, HTTP {status}): {err!r}')
                         raise err
+                    with lock:
+                        stats['retry'] += 1
+                    # Routine and self-healing, so it stays at debug; the volume summary carries
+                    # the aggregate.
+                    logging.debug(f'RETRY post {item["id"]} attempt {attempt}/{cf_retries} '
+                                  f'({kind}, HTTP {status}).')
                     if kind == 'throttle':
                         # Cloudflare pushed back on this fingerprint. Never a property of the
                         # post, so it must not blacklist the id; discard the session so the next
                         # lease draws a different fingerprint.
-                        with lock:
-                            throttled[0] += 1
                         pool.retire(slot, generation)
                     time.sleep(cf_retry_wait * attempt)
 
@@ -554,6 +565,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                             # The valve tripped while this item was queued; hand it to the next
                             # volume instead of spending bandwidth we cannot store.
                             deferred.append(item)
+                            stats['deferred'] += 1
                             return
 
                     _, ext = os.path.splitext(urlsplit(item['file_url']).filename)
@@ -579,6 +591,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                         with lock:
                             tar.add(dst_file, filename)
                             volume_bytes[0] += size
+                            stats['ok'] += 1
                             new_records.append({
                                 'id': item['id'],
                                 'filename': filename,
@@ -611,19 +624,22 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                             os.remove(dst_file)
 
                 parallel_call(plan, _fn_download, max_workers=download_workers,
-                              desc=f'Volume #{max_volume_id}')
+                              desc=f'Volume #{max_volume_id}', postfix=lambda: dict(stats))
 
             shutil.rmtree(stage_dir, ignore_errors=True)
             pending = sorted(deferred, key=lambda x: x['id']) + rest
 
-            attempted = len(plan) - len(deferred)
-            failed = attempted - len(new_records) - len(volume_bad)
-            if failed and failed >= attempted * max_blocked_ratio:
+            attempted = len(plan) - stats['deferred']
+            logging.info(f'Volume #{max_volume_id} downloaded: {stats["ok"]} ok, '
+                         f'{stats["gone"]} gone, {stats["failed"]} failed, '
+                         f'{stats["deferred"]} deferred, {stats["retry"]} retries, '
+                         f'{volume_bytes[0] / 1024 ** 3:.2f} GB.')
+            if stats['failed'] and stats['failed'] >= attempted * max_blocked_ratio:
                 # Sustained blocking wastes a volume id and a commit per attempt, so stop the run
-                # and let the next scheduled one start from a clean rate-limit window.
-                logging.error(f'{plural_word(failed, "post")} of {attempted} failed in volume '
-                              f'#{max_volume_id} ({throttled[0]} upstream rejections) - '
-                              f'aborting the run without publishing this volume.')
+                # and let the next scheduled one start from a clean window.
+                logging.error(f'ABORT: {stats["failed"]} of {attempted} posts failed in volume '
+                              f'#{max_volume_id}, at or above the '
+                              f'{max_blocked_ratio:.0%} threshold - not publishing this volume.')
                 break
 
             if not new_records:

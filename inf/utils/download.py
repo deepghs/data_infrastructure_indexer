@@ -91,8 +91,8 @@ def download_file(url: str, dst_file: str, session=None, expected_size: Optional
 
 
 def parallel_call(items: Sequence[Any], fn: Callable[[Any], Any], max_workers: int = 8,
-                  desc: Optional[str] = None, silent: bool = False,
-                  raise_error: bool = False) -> List[Optional[BaseException]]:
+                  desc: Optional[str] = None, silent: bool = False, raise_error: bool = False,
+                  postfix: Optional[Callable[[], dict]] = None) -> List[Optional[BaseException]]:
     """
     Run ``fn`` over ``items`` in a thread pool and return one entry per item.
 
@@ -111,6 +111,9 @@ def parallel_call(items: Sequence[Any], fn: Callable[[Any], Any], max_workers: i
     :type silent: bool
     :param raise_error: Re-raise the first captured exception once every item has been attempted.
     :type raise_error: bool
+    :param postfix: Called on each completion to label the bar with live counters. Carrying
+        outcome counts on the bar keeps them visible without one log line per item.
+    :type postfix: Optional[Callable[[], dict]]
     :returns: Per-item exception, or None when the item succeeded.
     :rtype: List[Optional[BaseException]]
     """
@@ -129,6 +132,8 @@ def parallel_call(items: Sequence[Any], fn: Callable[[Any], Any], max_workers: i
             errors[index] = err
         finally:
             with lock:
+                if postfix is not None:
+                    pg.set_postfix(postfix(), refresh=False)
                 pg.update()
 
     with ThreadPoolExecutor(max_workers=max_workers) as tp:
