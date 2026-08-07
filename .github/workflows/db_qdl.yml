@@ -1,0 +1,157 @@
+#file: noinspection YAMLSchemaValidation
+name: Danbooru Quick DL
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_time_limit:
+        description: 'Stop the run after this duration (e.g. 5h, 20m, none)'
+        required: false
+        default: '5h'
+      max_volume_files:
+        description: 'Maximum entries per tar volume'
+        required: false
+        default: '1000'
+      max_volume_bytes:
+        description: 'Approximate byte budget per tar volume'
+        required: false
+        default: '2147483648'
+      max_volumes:
+        description: 'Stop after this many volumes (empty means unlimited)'
+        required: false
+        default: ''
+      download_workers:
+        description: 'Concurrent download threads'
+        required: false
+        default: '16'
+  # Target cadence is every 8 hours. Kept commented until the job has proven itself,
+  # matching how the other schedules in this repository are staged back in.
+  #  schedule:
+  #    - cron: '17 */8 * * *'
+
+jobs:
+  quick_dl:
+    name: Danbooru Quick DL
+    runs-on: ${{ matrix.os }}
+    # GitHub hard-kills a job at 360 minutes; leave room for the final upload to finish.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - 'ubuntu-latest'
+        python-version:
+          - '3.8'
+
+    steps:
+      - name: Get system version for Linux
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        shell: bash
+        run: |
+          echo "OS_NAME=Linux" >> $GITHUB_ENV
+          echo "IS_WIN=" >> $GITHUB_ENV
+          echo "IS_MAC=" >> $GITHUB_ENV
+      - name: Set environment for Cpython
+        if: ${{ !contains(matrix.python-version, 'pypy') }}
+        shell: bash
+        run: |
+          echo "IS_PYPY=" >> $GITHUB_ENV
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 20
+          submodules: 'recursive'
+      - name: Free disk space
+        if: ${{ env.OS_NAME == 'Linux' }}
+        shell: bash
+        run: |
+          echo "=== Before ==="
+          df -h /
+          # Preinstalled toolchains this job never uses; removing them roughly doubles the
+          # space available for tar volumes.
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          echo "=== After ==="
+          df -h /
+      - name: Set up system dependencies on Linux
+        if: ${{ env.OS_NAME == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree wget curl make zip
+          sudo apt-get install -y git-lfs
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Test the basic environment
+        shell: bash
+        run: |
+          python -V
+          pip --version
+          df -h /
+          free -h
+      - name: Start disk monitor
+        shell: bash
+        run: |
+          nohup bash -c 'while true; do echo "=== $(date -Is) ==="; df -h / | tail -n 1; sleep 60; done' > disk.log 2>&1 &
+          echo $! > disk-monitor.pid
+      - name: Run quick_dl
+        env:
+          CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
+          REMOTE_REPOSITORY_DB_N_DL: ${{ secrets.REMOTE_REPOSITORY_DB_N_DL }}
+          DANBOORU_USERNAME: ${{ secrets.DANBOORU_USERNAME }}
+          DANBOORU_APITOKEN: ${{ secrets.DANBOORU_APITOKEN }}
+          MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
+          MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '1000' }}
+          MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '2147483648' }}
+          MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
+          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}
+        shell: bash
+        run: |
+          EXTRA=()
+          if [ -n "$MAX_VOLUMES" ]; then
+            EXTRA+=(--max-volumes "$MAX_VOLUMES")
+          fi
+          python -m inf.danbooru.quick_dl \
+            --max-time-limit "$MAX_TIME_LIMIT" \
+            --max-volume-files "$MAX_VOLUME_FILES" \
+            --max-volume-bytes "$MAX_VOLUME_BYTES" \
+            --download-workers "$DOWNLOAD_WORKERS" \
+            "${EXTRA[@]}"
+      - name: Stop disk monitor
+        if: always()
+        shell: bash
+        run: |
+          if [ -f disk-monitor.pid ]; then
+            kill "$(cat disk-monitor.pid)" 2>/dev/null || true
+            rm -f disk-monitor.pid
+          fi
+          if [ -f disk.log ]; then
+            echo "=== Lowest free space observed ==="
+            grep -oE '[0-9.]+[MG]? +[0-9]+%' disk.log | tail -n 5 || true
+            echo "=== Last samples ==="
+            tail -n 20 disk.log || true
+          fi
+          df -h /
+      - name: Upload disk log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disk-log
+          path: disk.log
+          if-no-files-found: ignore
