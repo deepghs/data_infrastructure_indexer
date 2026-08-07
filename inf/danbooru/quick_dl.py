@@ -370,8 +370,8 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 
 
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
-         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 4000,
-         max_volume_bytes: int = 8 * 1024 ** 3, max_volume_hard_bytes: int = 12 * 1024 ** 3,
+         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 1500,
+         max_volume_bytes: int = 2 * 1024 ** 3, max_volume_hard_bytes: int = 3 * 1024 ** 3,
          download_workers: int = 8, session_pool_size: int = 32,
          min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
@@ -654,8 +654,10 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 
             actual_bytes = os.path.getsize(tar_file)
             limiter.try_acquire('hf_upload')
-            logging.info(f'Uploading volume #{max_volume_id} - {plural_word(len(new_records), "image")}, '
-                         f'{actual_bytes / 1024 ** 3:.2f} GB, {plural_word(len(volume_bad), "bad id")} ...')
+            logging.info(f'UPLOAD volume #{max_volume_id} starting - '
+                         f'{plural_word(len(new_records), "image")}, '
+                         f'{actual_bytes / 1024 ** 3:.2f} GB.')
+            upload_started = time.time()
             safe_upload_directory_as_directory(
                 local_directory=upload_dir,
                 repo_id=repository,
@@ -663,6 +665,11 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                 path_in_repo='.',
                 message=f'Sync volume #{max_volume_id}, with {plural_word(len(new_records), "image")}',
             )
+            upload_elapsed = time.time() - upload_started
+            # Upload throughput, not download, is what bounds a run against this endpoint, so it
+            # is worth a number in the log rather than a guess after the fact.
+            logging.info(f'UPLOAD volume #{max_volume_id} done in {upload_elapsed:.0f}s '
+                         f'({actual_bytes / 1024 ** 2 / max(upload_elapsed, 1e-6):.1f} MB/s).')
             volumes_done += 1
 
         # TemporaryDirectory is gone here; drop the HF cache too so repeated volumes do not
@@ -715,21 +722,21 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-f', '--max-volume-files',
     type=int,
-    default=4000,
+    default=1500,
     show_default=True,
     help='Maximum number of entries packed into one tar volume.',
 )
 @click.option(
     '-b', '--max-volume-bytes',
     type=int,
-    default=8 * 1024 ** 3,
+    default=2 * 1024 ** 3,
     show_default=True,
     help='Approximate byte budget for one tar volume.',
 )
 @click.option(
     '-H', '--max-volume-hard-bytes',
     type=int,
-    default=12 * 1024 ** 3,
+    default=3 * 1024 ** 3,
     show_default=True,
     help='Ceiling on the bytes actually written into a tar. Crossing it seals the volume '
          'immediately, uploads it, and moves the rest of the batch to the next volume.',
