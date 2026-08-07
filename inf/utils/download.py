@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
-import requests
+import httpx
 from ditk import logging
 from tqdm import tqdm
 
@@ -22,11 +22,15 @@ class DownloadSizeMismatch(Exception):
         self.actual_size = actual_size
 
 
-def download_file(url: str, dst_file: str, session: Optional[requests.Session] = None,
-                  expected_size: Optional[int] = None, chunk_size: int = DEFAULT_CHUNK_SIZE,
-                  timeout: Optional[float] = None, **kwargs) -> int:
+def download_file(url: str, dst_file: str, session=None, expected_size: Optional[int] = None,
+                  chunk_size: int = DEFAULT_CHUNK_SIZE, timeout: Optional[float] = None, **kwargs) -> int:
     """
     Stream a remote file to ``dst_file`` and return the number of bytes written.
+
+    Accepts either a ``requests.Session`` or an ``httpx.Client``; sites behind a bot
+    classifier generally need the HTTP/2 client, while everything else is happy with
+    ``requests``. Both raise an error object exposing ``.response.status_code``, so callers
+    can classify failures the same way regardless of which one they passed.
 
     The body is written to a sibling ``.tmp`` path first and renamed only after the transfer
     finishes, so a killed job never leaves a truncated file that a later run would mistake
@@ -36,8 +40,8 @@ def download_file(url: str, dst_file: str, session: Optional[requests.Session] =
     :type url: str
     :param dst_file: Local destination path. Parent directories are created when missing.
     :type dst_file: str
-    :param session: Session to reuse. A fresh retrying session is built when omitted.
-    :type session: Optional[requests.Session]
+    :param session: ``requests.Session`` or ``httpx.Client`` to reuse. A fresh retrying
+        ``requests`` session is built when omitted.
     :param expected_size: When given, the transferred size must match it exactly.
     :type expected_size: Optional[int]
     :param chunk_size: Streaming chunk size in bytes.
@@ -52,19 +56,27 @@ def download_file(url: str, dst_file: str, session: Optional[requests.Session] =
     if os.path.dirname(dst_file):
         os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     tmp_file = f'{dst_file}.tmp'
+    if timeout is not None:
+        kwargs['timeout'] = timeout
 
     try:
-        if timeout is not None:
-            kwargs['timeout'] = timeout
-        resp = session.get(url, stream=True, **kwargs)
-        resp.raise_for_status()
-
         size = 0
-        with open(tmp_file, 'wb') as f:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-                    size += len(chunk)
+        if isinstance(session, httpx.Client):
+            with session.stream('GET', url, **kwargs) as resp:
+                resp.raise_for_status()
+                with open(tmp_file, 'wb') as f:
+                    for chunk in resp.iter_bytes(chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            size += len(chunk)
+        else:
+            resp = session.get(url, stream=True, **kwargs)
+            resp.raise_for_status()
+            with open(tmp_file, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        size += len(chunk)
 
         if expected_size is not None and size != expected_size:
             raise DownloadSizeMismatch(url, expected_size, size)

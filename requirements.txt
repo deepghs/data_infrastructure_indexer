@@ -30,6 +30,9 @@ pynacl
 tqdm
 hbutils
 requests
+# HTTP/2 is mandatory for donmai.us: Cloudflare 403s HTTP/1.1 clients there, so the h2 extra
+# must be an explicit dependency rather than something inherited from another package.
+httpx[http2]
 numpy
 natsort
 pytimeparse>=1.1.8

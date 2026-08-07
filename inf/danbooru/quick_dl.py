@@ -52,11 +52,13 @@ repack stage rejoins them by id.
 """
 import datetime
 import json
+import logging as _logging
 import math
 import os
 import shutil
 import tarfile
 import time
+from hashlib import md5
 from threading import Lock
 from typing import List, Optional
 
@@ -78,12 +80,14 @@ from tqdm import tqdm
 from inf.utils.download import download_file, parallel_call, get_free_disk_bytes, log_disk_usage
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
-from inf.utils.session import get_requests_session
+from .base import get_danbooru_session, __site_url__  # noqa: F401 - re-exported for callers
 
 # Danbooru serves genuinely huge originals; the default bomb guard would reject valid posts.
 Image.MAX_IMAGE_PIXELS = 32768 ** 2
 
-__site_url__ = 'https://danbooru.donmai.us'
+# One INFO line per download would bury the progress bar and the volume summaries.
+_logging.getLogger('httpx').setLevel(_logging.WARNING)
+_logging.getLogger('httpcore').setLevel(_logging.WARNING)
 
 #: Columns streamed out of the upstream index. Kept minimal because every extra column
 #: multiplies the bytes pulled over range requests on each run.
@@ -92,6 +96,89 @@ _SCAN_COLUMNS = ['id', 'file_url', 'mimetype', 'file_ext', 'file_size', 'image_w
 #: Columns persisted in the staging ``table.parquet``.
 _TABLE_COLUMNS = ['id', 'filename', 'volume_file', 'file_size', 'mimetype', 'file_ext',
                   'width', 'height', 'rating', 'md5', 'file_url']
+
+
+def _verify_md5(local_file: str, expected_md5: Optional[str], chunk_size: int = 1 << 20):
+    """
+    Check a downloaded file against the md5 recorded in the index.
+
+    The index publishes an md5 for every post, so this turns "the byte count looked right" into
+    a real integrity guarantee at the cost of one streaming pass. Reading in chunks keeps the
+    multi-hundred-megabyte originals off the heap.
+
+    :param local_file: Path of the file to check.
+    :type local_file: str
+    :param expected_md5: Expected digest. Verification is skipped when absent.
+    :type expected_md5: Optional[str]
+    :param chunk_size: Read size in bytes.
+    :type chunk_size: int
+    :raises ValueError: When the digest does not match.
+    """
+    if not expected_md5:
+        return
+    hash_obj = md5()
+    with open(local_file, 'rb') as f:
+        while True:
+            data = f.read(chunk_size)
+            if not data:
+                break
+            hash_obj.update(data)
+    actual = hash_obj.hexdigest()
+    if actual != expected_md5:
+        raise ValueError(f'MD5 mismatch for {os.path.basename(local_file)!r} - '
+                         f'{expected_md5!r} expected, {actual!r} found.')
+
+
+class _SessionHolder:
+    """
+    Hold the shared Danbooru client and allow workers to swap it out after a challenge.
+
+    Cloudflare rejects a fingerprint for the life of the connection, so recovering means
+    building a whole new client rather than retrying on the old one. Workers pass the
+    generation they were using; whoever reports first does the rebuild and the rest pick up
+    the replacement, so a burst of concurrent 403s costs one warm-up instead of one per thread.
+    """
+
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+        self._lock = Lock()
+        self._generation = 0
+        self._session = get_danbooru_session(**kwargs)
+
+    @property
+    def session(self):
+        return self._session
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def refresh(self, seen_generation: int):
+        """
+        Replace the client unless another worker already replaced this generation.
+
+        :param seen_generation: Generation the caller was using when it hit the challenge.
+        :type seen_generation: int
+        """
+        with self._lock:
+            if seen_generation != self._generation:
+                return self._session
+            logging.info(f'Cloudflare challenge hit, rebuilding session '
+                         f'(generation {self._generation} -> {self._generation + 1}) ...')
+            old = self._session
+            self._session = get_danbooru_session(**self._kwargs)
+            self._generation += 1
+            try:
+                old.close()
+            except Exception:  # pragma: no cover - closing a dead client must not abort the run
+                pass
+            return self._session
+
+    def close(self):
+        try:
+            self._session.close()
+        except Exception:  # pragma: no cover
+            pass
 
 
 def _volume_paths(volume_id: int):
@@ -311,8 +398,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
          max_volume_bytes: int = 2 * 1024 ** 3, download_workers: int = 16,
          min_free_disk: int = 8 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
-         max_volumes: Optional[int] = None, username: Optional[str] = None,
-         apitoken: Optional[str] = None, proxy_pool: Optional[str] = None):
+         max_volumes: Optional[int] = None, cf_retries: int = 4, max_blocked_ratio: float = 0.3,
+         username: Optional[str] = None, apitoken: Optional[str] = None,
+         proxy_pool: Optional[str] = None):
     """
     Download missing Danbooru originals into append-only tar volumes in the staging repository.
 
@@ -340,9 +428,15 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :type glob_exist_ids_file: str
     :param max_volumes: Stop after this many volumes. Useful for smoke runs.
     :type max_volumes: Optional[int]
-    :param username: Danbooru account name for authenticated requests.
+    :param cf_retries: Attempts per post before giving up, rebuilding the session between
+        Cloudflare rejections.
+    :type cf_retries: int
+    :param max_blocked_ratio: Abort the run when this fraction of a volume fails for reasons
+        other than the post being gone upstream.
+    :type max_blocked_ratio: float
+    :param username: Danbooru account name, used on the session warm-up call.
     :type username: Optional[str]
-    :param apitoken: Danbooru API key for authenticated requests.
+    :param apitoken: Danbooru API key, used on the session warm-up call.
     :type apitoken: Optional[str]
     :param proxy_pool: Proxy URL applied to every upstream request.
     :type proxy_pool: Optional[str]
@@ -377,11 +471,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                           max_volume_bytes=max_volume_bytes)
     logging.info(f'{plural_word(len(plans), "volume")} planned for the full backlog.')
 
-    session = get_requests_session(headers={'Referer': f'{__site_url__}/'})
-    if proxy_pool:
-        logging.info(f'Proxy {proxy_pool!r} enabled.')
-        session.proxies.update({'http': proxy_pool, 'https': proxy_pool})
-    auth = (username, apitoken) if username and apitoken else None
+    # Cloudflare rejects plain HTTP/1.1 clients on every donmai.us host, so the CDN is only
+    # reachable through a warmed-up HTTP/2 session. See inf/danbooru/base.py.
+    holder = _SessionHolder(proxy_pool=proxy_pool, username=username, apitoken=apitoken)
 
     volumes_done = 0
     for plan in plans:
@@ -414,6 +506,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 
             new_records: List[dict] = []
             volume_bad: List[int] = []
+            blocked = [0]
             lock = Lock()
 
             with tarfile.open(tar_file, 'w:') as tar:
@@ -422,20 +515,37 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                     filename = f'{item["id"]}{ext}'
                     dst_file = os.path.join(stage_dir, filename)
                     try:
-                        try:
-                            size = download_file(item['file_url'], dst_file, session=session,
-                                                 expected_size=item['file_size'], auth=auth)
-                            # A 200 response carrying an HTML error body would pass the size check
-                            # only by coincidence; the header parse rules that out cheaply.
-                            with Image.open(dst_file) as image:
-                                width, height = image.size
-                        except Exception as err:
-                            status = getattr(getattr(err, 'response', None), 'status_code', None)
-                            if status in (403, 404, 410):
-                                with lock:
-                                    volume_bad.append(item['id'])
-                            logging.warning(f'Post {item["id"]} skipped - {err!r}')
-                            raise
+                        size = width = height = None
+                        for attempt in range(1, cf_retries + 1):
+                            generation = holder.generation
+                            try:
+                                size = download_file(item['file_url'], dst_file,
+                                                     session=holder.session,
+                                                     expected_size=item['file_size'])
+                                _verify_md5(dst_file, item['md5'])
+                                # A 200 carrying an HTML error body would clear the size and md5
+                                # checks only by miracle, but the header parse is nearly free.
+                                with Image.open(dst_file) as image:
+                                    width, height = image.size
+                                break
+                            except Exception as err:
+                                status = getattr(getattr(err, 'response', None), 'status_code', None)
+                                if status in (404, 410):
+                                    # Genuinely gone upstream: record it so later runs skip it.
+                                    with lock:
+                                        volume_bad.append(item['id'])
+                                    logging.warning(f'Post {item["id"]} is gone (HTTP {status}).')
+                                    raise
+                                if status == 403 and attempt < cf_retries:
+                                    # Cloudflare re-challenged us. This is never a property of the
+                                    # post, so it must not blacklist the id; swap in a session with
+                                    # a fresh fingerprint and try again.
+                                    with lock:
+                                        blocked[0] += 1
+                                    holder.refresh(generation)
+                                    continue
+                                logging.warning(f'Post {item["id"]} skipped - {err!r}')
+                                raise
 
                         with lock:
                             tar.add(dst_file, filename)
@@ -462,6 +572,15 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                               desc=f'Volume #{max_volume_id}')
 
             shutil.rmtree(stage_dir, ignore_errors=True)
+
+            failed = len(plan) - len(new_records) - len(volume_bad)
+            if failed and failed >= len(plan) * max_blocked_ratio:
+                # Sustained blocking wastes a volume id and a commit per attempt, so stop the run
+                # and let the next scheduled one start from a clean rate-limit window.
+                logging.error(f'{plural_word(failed, "post")} of {len(plan)} failed in volume '
+                              f'#{max_volume_id} ({blocked[0]} Cloudflare rejections) - '
+                              f'aborting the run without publishing this volume.')
+                break
 
             if not new_records:
                 logging.warning(f'Volume #{max_volume_id} produced no file, discarded.')
@@ -510,6 +629,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
         delete_detached_cache()
         log_disk_usage(os.getcwd(), prefix='Disk after volume')
 
+    holder.close()
     logging.info(f'Done, {plural_word(volumes_done, "volume")} published in this run, '
                  f'{plural_word(len(records), "image")} stored in total.')
 
@@ -606,6 +726,21 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     help='Stop after publishing this many volumes. Intended for smoke runs.',
 )
 @click.option(
+    '-c', '--cf-retries',
+    type=int,
+    default=4,
+    show_default=True,
+    help='Attempts per post, rebuilding the session between Cloudflare rejections.',
+)
+@click.option(
+    '-B', '--max-blocked-ratio',
+    type=float,
+    default=0.3,
+    show_default=True,
+    help='Abort the run when this fraction of a volume fails for reasons other than the post '
+         'being gone upstream.',
+)
+@click.option(
     '-U', '--username',
     type=str,
     envvar='DANBOORU_USERNAME',
@@ -632,8 +767,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 def cli(repository: str, src_repository: str, src_revision: str, max_time_limit: Optional[float],
         max_volume_files: int, max_volume_bytes: int, download_workers: int, min_free_disk: int,
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
-        max_volumes: Optional[int], username: Optional[str], apitoken: Optional[str],
-        proxy_pool: Optional[str]):
+        max_volumes: Optional[int], cf_retries: int, max_blocked_ratio: float,
+        username: Optional[str], apitoken: Optional[str], proxy_pool: Optional[str]):
     logging.try_init_root(logging.INFO)
     return sync(
         repository=repository,
@@ -648,6 +783,8 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         include_non_image=include_non_image,
         glob_exist_ids_file=glob_exist_ids_file,
         max_volumes=max_volumes,
+        cf_retries=cf_retries,
+        max_blocked_ratio=max_blocked_ratio,
         username=username,
         apitoken=apitoken,
         proxy_pool=proxy_pool,
