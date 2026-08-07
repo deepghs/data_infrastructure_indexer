@@ -1,4 +1,5 @@
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import md5
 from threading import Lock
@@ -31,6 +32,91 @@ class DownloadDigestMismatch(Exception):
         self.url = url
         self.expected_md5 = expected_md5
         self.actual_md5 = actual_md5
+
+
+class AdaptiveRateLimiter:
+    """
+    Pace requests towards a metered endpoint, converging on the rate it will actually serve.
+
+    A site that answers 429 is stating a rate, not refusing the work. Guessing that rate through
+    a worker count does not work: too few workers leave throughput on the table, too many turn
+    most requests into rejections. Measured on ``cdn.donmai.us`` from a GitHub runner, eight
+    workers delivered 1.7 images/s with 0.84 rejections each, while twenty-four delivered 6.0/s
+    but rejected nine of every ten requests and gave up on 58% of the batch.
+
+    So the rate is discovered instead: additive increase while requests are served,
+    multiplicative decrease when one is throttled. The decrease is rate-limited itself, because
+    a burst of 429s from concurrent workers describes one overload, not twenty.
+
+    :param initial: Requests per second to start from.
+    :type initial: float
+    :param minimum: Floor, so a bad patch cannot stall the run entirely.
+    :type minimum: float
+    :param maximum: Ceiling, so the limiter cannot run away on an unmetered stretch.
+    :type maximum: float
+    :param increase: Requests per second added after each ``probe_every`` successes.
+    :type increase: float
+    :param decrease: Multiplier applied on throttling.
+    :type decrease: float
+    :param probe_every: Successes between increases.
+    :type probe_every: int
+    :param decrease_cooldown: Minimum seconds between two decreases.
+    :type decrease_cooldown: float
+    """
+
+    def __init__(self, initial: float = 4.0, minimum: float = 0.5, maximum: float = 64.0,
+                 increase: float = 0.5, decrease: float = 0.7, probe_every: int = 25,
+                 decrease_cooldown: float = 2.0):
+        self._rate = float(initial)
+        self._minimum = float(minimum)
+        self._maximum = float(maximum)
+        self._increase = float(increase)
+        self._decrease = float(decrease)
+        self._probe_every = max(int(probe_every), 1)
+        self._decrease_cooldown = float(decrease_cooldown)
+
+        self._lock = Lock()
+        self._next_slot = 0.0
+        self._successes = 0
+        self._last_decrease = 0.0
+        self._throttles = 0
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+
+    @property
+    def throttles(self) -> int:
+        return self._throttles
+
+    def acquire(self):
+        """Block until this caller's turn, keeping the fleet at the current rate."""
+        with self._lock:
+            now = time.time()
+            start = max(now, self._next_slot)
+            self._next_slot = start + 1.0 / max(self._rate, 1e-6)
+        delay = start - time.time()
+        if delay > 0:
+            time.sleep(delay)
+
+    def report_success(self):
+        """Record a served request, probing upwards every so often."""
+        with self._lock:
+            self._successes += 1
+            if self._successes >= self._probe_every:
+                self._successes = 0
+                self._rate = min(self._maximum, self._rate + self._increase)
+
+    def report_throttled(self):
+        """Record a 429, backing the rate off unless we just did."""
+        with self._lock:
+            self._throttles += 1
+            now = time.time()
+            if now - self._last_decrease < self._decrease_cooldown:
+                return
+            self._last_decrease = now
+            self._successes = 0
+            self._rate = max(self._minimum, self._rate * self._decrease)
 
 
 def download_file(url: str, dst_file: str, session=None, expected_size: Optional[int] = None,
@@ -225,6 +311,7 @@ def log_disk_usage(path: str, prefix: str = 'Disk'):
 
 
 __all__ = [
+    'AdaptiveRateLimiter',
     'DownloadSizeMismatch',
     'DownloadDigestMismatch',
     'download_file',

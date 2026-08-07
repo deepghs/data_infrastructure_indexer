@@ -82,7 +82,8 @@ from hfutils.utils import hf_normpath, number_to_tag
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
 
-from inf.utils.download import download_file, parallel_call, get_free_disk_bytes, log_disk_usage
+from inf.utils.download import AdaptiveRateLimiter, download_file, parallel_call, \
+    get_free_disk_bytes, log_disk_usage
 from inf.utils.duration import duration_type
 from inf.utils.safe import configure_hf_http_backend, safe_hf_hub_download, \
     safe_upload_directory_as_directory
@@ -216,26 +217,33 @@ def _scan_candidates(src_repository: str, src_revision: str, covered_ids: set,
 
 #: Statuses meaning the post itself is gone. Only these may blacklist an id.
 _PERMANENT_STATUS = (404, 410)
-#: Statuses meaning the site is pushing back on us, never a property of the post. These trigger
-#: a session rebuild and a backoff, and must never blacklist an id.
-_THROTTLE_STATUS = (403, 429)
 
 
 def _classify_error(err: Exception) -> str:
     """
     Decide how a failed download should be handled.
 
+    The distinction that matters is between 403 and 429, which an earlier version lumped
+    together. A 403 says this fingerprint is unwelcome, so the cure is a different session and
+    an immediate retry. A 429 says the request rate is too high, so the cure is to slow the
+    whole fleet down; swapping sessions there achieves nothing and retrying quickly makes it
+    worse. Every rejection observed on CI has been a 429.
+
     :param err: Exception raised while fetching or validating a post.
     :type err: Exception
-    :returns: ``'permanent'`` when the post is gone upstream, ``'throttle'`` when the site is
-        rejecting us and the session should be rebuilt, ``'transient'`` otherwise.
+    :returns: ``'permanent'`` when the post is gone upstream, ``'blocked'`` when the fingerprint
+        was refused, ``'rate_limit'`` when the site is metering us, ``'transient'`` otherwise.
     :rtype: str
     """
     status = getattr(getattr(err, 'response', None), 'status_code', None)
     if status in _PERMANENT_STATUS:
         return 'permanent'
-    if status in _THROTTLE_STATUS or (status is not None and status // 100 == 5):
-        return 'throttle'
+    if status == 429:
+        return 'rate_limit'
+    if status == 403:
+        return 'blocked'
+    if status is not None and status // 100 == 5:
+        return 'rate_limit'
     return 'transient'
 
 
@@ -373,11 +381,12 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
          max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 1500,
          max_volume_bytes: int = 2 * 1024 ** 3, max_volume_hard_bytes: int = 3 * 1024 ** 3,
-         download_workers: int = 24, session_pool_size: int = 0,
+         download_workers: int = 16, session_pool_size: int = 0,
          min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
          max_volumes: Optional[int] = None, retire_after: int = 2,
-         cf_retries: int = 6, cf_retry_wait: float = 0.5,
+         initial_rate: float = 4.0, max_rate: float = 64.0,
+         cf_retries: int = 6, cf_retry_wait: float = 2.0,
          max_blocked_ratio: float = 0.3, proxy_pool: Optional[str] = None):
     """
     Download missing Danbooru originals into append-only tar volumes in the staging repository.
@@ -413,6 +422,10 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :type max_volumes: Optional[int]
     :param retire_after: Consecutive rejections a session slot survives before being replaced.
     :type retire_after: int
+    :param initial_rate: Requests per second the adaptive limiter starts from.
+    :type initial_rate: float
+    :param max_rate: Ceiling for the adaptive limiter.
+    :type max_rate: float
     :param cf_retries: Attempts per post before giving up, rebuilding the session between
         Cloudflare rejections.
     :type cf_retries: int
@@ -464,6 +477,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     # reuse, and a hot connection is the single biggest lever on throughput here.
     pool = DanbooruSessionPool(size=session_pool_size or download_workers + 4,
                                retire_after=retire_after, proxy_pool=proxy_pool)
+    # The site meters requests and says so with 429. Discover the rate it will serve rather
+    # than encoding a guess as a worker count.
+    rate_limiter = AdaptiveRateLimiter(initial=initial_rate, maximum=max_rate)
 
     volumes_done = 0
     pending = candidates
@@ -512,6 +528,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                 def _handle(err, item, attempt) -> float:
                     """Record the outcome and return how long to wait before retrying."""
                     kind = _classify_error(err)
+                    if kind == 'rate_limit':
+                        rate_limiter.report_throttled()
                     status = getattr(getattr(err, 'response', None), 'status_code', None)
                     if kind == 'permanent':
                         # Genuinely gone upstream: record it so later runs skip it.
@@ -530,12 +548,12 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                         stats['retry'] += 1
                     logging.info(f'RETRY post {item["id"]} attempt {attempt}/{cf_retries} '
                                  f'({kind}, HTTP {status}).')
-                    # A throttle costs only a new fingerprint, which is a local object, so it
-                    # earns a much lighter wait than a real network fault. The jitter matters:
+                    # A refused fingerprint costs only a new local object, so it earns a much
+                    # lighter wait than a metered rate or a network fault. The jitter matters:
                     # without it every worker rejected in the same instant retries in the same
                     # instant, which is the burst that earned the rejection.
-                    base = cf_retry_wait * (0.25 if kind == 'throttle' else 1.0) * attempt
-                    return base * (0.5 + random.random())
+                    weight = 0.25 if kind == 'blocked' else 1.0
+                    return cf_retry_wait * weight * attempt * (0.5 + random.random())
 
                 def _fn_download(item):
                     with lock:
@@ -553,6 +571,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                         size = width = height = None
                         for attempt in range(1, cf_retries + 1):
                             failure = None
+                            rate_limiter.acquire()
                             with pool.lease() as (slot, generation, session):
                                 try:
                                     size = download_file(item['file_url'], dst_file,
@@ -565,12 +584,16 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                         width, height = image.size
                                 except Exception as err:
                                     failure = err
-                                    if _classify_error(err) == 'throttle':
+                                    # Only a refused fingerprint is the session's fault. Swapping
+                                    # sessions on a 429 would discard a healthy connection and
+                                    # change nothing about the rate.
+                                    if _classify_error(err) == 'blocked':
                                         pool.report_failure(slot, generation)
                                 else:
                                     # Reported inside the lease: once released, another worker
                                     # may retire the slot and the credit would be lost.
                                     pool.report_success(slot)
+                                    rate_limiter.report_success()
                             if failure is None:
                                 break
                             # Outside the lease: a sleeping worker must not also hold a slot.
@@ -619,6 +642,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             pending = sorted(deferred, key=lambda x: x['id']) + rest
 
             attempted = len(plan) - stats['deferred']
+            logging.info(f'Rate limiter settled at {rate_limiter.rate:.1f} req/s after '
+                         f'{rate_limiter.throttles} throttling responses.')
             logging.info(f'Volume #{max_volume_id} downloaded: {stats["ok"]} ok, '
                          f'{stats["gone"]} gone, {stats["failed"]} failed, '
                          f'{stats["deferred"]} deferred, {stats["retry"]} retries, '
@@ -757,11 +782,10 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-w', '--download-workers',
     type=int,
-    default=24,
+    default=16,
     show_default=True,
-    help='Number of concurrent download threads. The site rejects a roughly fixed share of '
-         'requests regardless of connection reuse, so concurrency is the main lever on '
-         'throughput.',
+    help='Number of concurrent download threads. Throughput is capped by the site meter, not by '
+         'this, so extra workers only help drain the initial burst allowance faster.',
 )
 @click.option(
     '-P', '--session-pool-size',
@@ -805,6 +829,20 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     help='Stop after publishing this many volumes. Intended for smoke runs.',
 )
 @click.option(
+    '-I', '--initial-rate',
+    type=float,
+    default=4.0,
+    show_default=True,
+    help='Requests per second the adaptive limiter starts from before probing upwards.',
+)
+@click.option(
+    '-M', '--max-rate',
+    type=float,
+    default=64.0,
+    show_default=True,
+    help='Ceiling for the adaptive request rate.',
+)
+@click.option(
     '-T', '--retire-after',
     type=int,
     default=2,
@@ -823,10 +861,10 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-C', '--cf-retry-wait',
     type=duration_type(),
-    default=0.5,
+    default=2.0,
     show_default=True,
-    help='Base backoff after a Cloudflare rejection; grows with the attempt number. Kept small '
-         'because a rejection is not a signal to slow down here, only to try again.',
+    help='Base backoff after a rejection; grows with the attempt number. A refused fingerprint '
+         'waits a quarter as long, since only the session needs changing.',
 )
 @click.option(
     '-B', '--max-blocked-ratio',
@@ -848,7 +886,8 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         max_volume_files: int, max_volume_bytes: int, max_volume_hard_bytes: int,
         download_workers: int, session_pool_size: int, min_free_disk: int,
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
-        max_volumes: Optional[int], retire_after: int, cf_retries: int, cf_retry_wait: float,
+        max_volumes: Optional[int], initial_rate: float, max_rate: float,
+        retire_after: int, cf_retries: int, cf_retry_wait: float,
         max_blocked_ratio: float, proxy_pool: Optional[str]):
     logging.try_init_root(logging.INFO)
     return sync(
@@ -867,6 +906,8 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         glob_exist_ids_file=glob_exist_ids_file,
         max_volumes=max_volumes,
         retire_after=retire_after,
+        initial_rate=initial_rate,
+        max_rate=max_rate,
         cf_retries=cf_retries,
         cf_retry_wait=cf_retry_wait,
         max_blocked_ratio=max_blocked_ratio,

@@ -31,7 +31,7 @@ on:
       download_workers:
         description: 'Concurrent download threads'
         required: false
-        default: '24'
+        default: '16'
   # Target cadence is every 8 hours. Kept commented until the job has proven itself,
   # matching how the other schedules in this repository are staged back in.
   #  schedule:
@@ -130,7 +130,7 @@ jobs:
           MAX_VOLUME_HARD_BYTES: ${{ github.event.inputs.max_volume_hard_bytes || '3221225472' }}
           SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '0' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
-          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '24' }}
+          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}
         shell: bash
         run: |
           EXTRA=()
