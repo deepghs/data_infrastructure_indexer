@@ -60,10 +60,10 @@ import json
 import logging as _logging
 import math
 import os
+import random
 import shutil
 import tarfile
 import time
-from hashlib import md5
 from threading import Lock
 from typing import List, Optional
 
@@ -101,37 +101,6 @@ _SCAN_COLUMNS = ['id', 'file_url', 'mimetype', 'file_ext', 'file_size', 'image_w
 #: Columns persisted in the staging ``table.parquet``.
 _TABLE_COLUMNS = ['id', 'filename', 'volume_file', 'file_size', 'mimetype', 'file_ext',
                   'width', 'height', 'rating', 'md5', 'file_url']
-
-
-def _verify_md5(local_file: str, expected_md5: Optional[str], chunk_size: int = 1 << 20):
-    """
-    Check a downloaded file against the md5 recorded in the index.
-
-    The index publishes an md5 for every post, so this turns "the byte count looked right" into
-    a real integrity guarantee at the cost of one streaming pass. Reading in chunks keeps the
-    multi-hundred-megabyte originals off the heap.
-
-    :param local_file: Path of the file to check.
-    :type local_file: str
-    :param expected_md5: Expected digest. Verification is skipped when absent.
-    :type expected_md5: Optional[str]
-    :param chunk_size: Read size in bytes.
-    :type chunk_size: int
-    :raises ValueError: When the digest does not match.
-    """
-    if not expected_md5:
-        return
-    hash_obj = md5()
-    with open(local_file, 'rb') as f:
-        while True:
-            data = f.read(chunk_size)
-            if not data:
-                break
-            hash_obj.update(data)
-    actual = hash_obj.hexdigest()
-    if actual != expected_md5:
-        raise ValueError(f'MD5 mismatch for {os.path.basename(local_file)!r} - '
-                         f'{expected_md5!r} expected, {actual!r} found.')
 
 
 def _volume_paths(volume_id: int):
@@ -530,7 +499,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             stats = {'ok': 0, 'gone': 0, 'failed': 0, 'retry': 0, 'deferred': 0}
 
             with tarfile.open(tar_file, 'w:') as tar:
-                def _handle(err, item, attempt, slot, generation):
+                def _handle(err, item, attempt) -> float:
+                    """Record the outcome and return how long to wait before retrying."""
                     kind = _classify_error(err)
                     status = getattr(getattr(err, 'response', None), 'status_code', None)
                     if kind == 'permanent':
@@ -548,16 +518,14 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                         raise err
                     with lock:
                         stats['retry'] += 1
-                    # Routine and self-healing, so it stays at debug; the volume summary carries
-                    # the aggregate.
-                    logging.debug(f'RETRY post {item["id"]} attempt {attempt}/{cf_retries} '
-                                  f'({kind}, HTTP {status}).')
-                    if kind == 'throttle':
-                        # Cloudflare pushed back on this fingerprint. Never a property of the
-                        # post, so it must not blacklist the id; discard the session so the next
-                        # lease draws a different fingerprint.
-                        pool.retire(slot, generation)
-                    time.sleep(cf_retry_wait * attempt)
+                    logging.info(f'RETRY post {item["id"]} attempt {attempt}/{cf_retries} '
+                                 f'({kind}, HTTP {status}).')
+                    # A throttle costs only a new fingerprint, which is a local object, so it
+                    # earns a much lighter wait than a real network fault. The jitter matters:
+                    # without it every worker rejected in the same instant retries in the same
+                    # instant, which is the burst that earned the rejection.
+                    base = cf_retry_wait * (0.25 if kind == 'throttle' else 1.0) * attempt
+                    return base * (0.5 + random.random())
 
                 def _fn_download(item):
                     with lock:
@@ -574,20 +542,28 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                     try:
                         size = width = height = None
                         for attempt in range(1, cf_retries + 1):
+                            failure = None
                             with pool.lease() as (slot, generation, session):
                                 try:
                                     size = download_file(item['file_url'], dst_file,
                                                          session=session,
-                                                         expected_size=item['file_size'])
-                                    _verify_md5(dst_file, item['md5'])
-                                    # A 200 carrying an HTML error body would clear the size and
-                                    # md5 checks only by miracle, but the header parse is cheap.
+                                                         expected_size=item['file_size'],
+                                                         expected_md5=item['md5'])
+                                    # Size and md5 already rule out a truncated or substituted
+                                    # body; this only rejects formats PIL cannot open.
                                     with Image.open(dst_file) as image:
                                         width, height = image.size
                                 except Exception as err:
-                                    _handle(err, item, attempt, slot, generation)
-                                    continue
-                            break
+                                    failure = err
+                                    if _classify_error(err) == 'throttle':
+                                        pool.retire(slot, generation)
+                            if failure is None:
+                                pool.report_success(slot)
+                                break
+                            # Outside the lease: a sleeping worker must not also hold a slot.
+                            wait = _handle(failure, item, attempt)
+                            if wait:
+                                time.sleep(wait)
                         with lock:
                             tar.add(dst_file, filename)
                             volume_bytes[0] += size
@@ -634,6 +610,11 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                          f'{stats["gone"]} gone, {stats["failed"]} failed, '
                          f'{stats["deferred"]} deferred, {stats["retry"]} retries, '
                          f'{volume_bytes[0] / 1024 ** 3:.2f} GB.')
+            fp_stats = pool.impersonate_stats()
+            if fp_stats:
+                worst = sorted(fp_stats.items(), key=lambda kv: kv[1][0] / max(sum(kv[1]), 1))[:4]
+                logging.info('Fingerprints (ok/rejected): ' + ', '.join(
+                    f'{imp}={ok}/{bad}' for imp, (ok, bad) in worst))
             if stats['failed'] and stats['failed'] >= attempted * max_blocked_ratio:
                 # Sustained blocking wastes a volume id and a commit per attempt, so stop the run
                 # and let the next scheduled one start from a clean window.

@@ -1,5 +1,5 @@
 from .session import get_random_ua, get_random_mobile_ua, TimeoutHTTPAdapter, get_requests_session
 from .duration import DurationType, duration_type, parse_duration_to_seconds
-from .download import DownloadSizeMismatch, download_file, parallel_call, iter_chunks, \
-    get_free_disk_bytes, log_disk_usage
+from .download import DownloadSizeMismatch, DownloadDigestMismatch, download_file, parallel_call, \
+    iter_chunks, get_free_disk_bytes, log_disk_usage
 from .safe import safe_hf_hub_download, safe_download_file_to_file, safe_download_archive_as_directory

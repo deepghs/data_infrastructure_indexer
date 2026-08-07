@@ -1,5 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import md5
 from threading import Lock
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
@@ -22,8 +23,19 @@ class DownloadSizeMismatch(Exception):
         self.actual_size = actual_size
 
 
+class DownloadDigestMismatch(Exception):
+    """Raised when a completed download does not match the md5 announced by the index."""
+
+    def __init__(self, url: str, expected_md5: str, actual_md5: str):
+        Exception.__init__(self, f'MD5 mismatch for {url!r} - expected {expected_md5!r}, got {actual_md5!r}.')
+        self.url = url
+        self.expected_md5 = expected_md5
+        self.actual_md5 = actual_md5
+
+
 def download_file(url: str, dst_file: str, session=None, expected_size: Optional[int] = None,
-                  chunk_size: int = DEFAULT_CHUNK_SIZE, timeout: Optional[float] = None, **kwargs) -> int:
+                  expected_md5: Optional[str] = None, chunk_size: int = DEFAULT_CHUNK_SIZE,
+                  timeout: Optional[float] = None, **kwargs) -> int:
     """
     Stream a remote file to ``dst_file`` and return the number of bytes written.
 
@@ -44,6 +56,9 @@ def download_file(url: str, dst_file: str, session=None, expected_size: Optional
         ``requests`` session is built when omitted.
     :param expected_size: When given, the transferred size must match it exactly.
     :type expected_size: Optional[int]
+    :param expected_md5: When given, the digest is computed from the stream and must match.
+        Hashing inline avoids reading the whole file back off disk a second time.
+    :type expected_md5: Optional[str]
     :param chunk_size: Streaming chunk size in bytes.
     :type chunk_size: int
     :param timeout: Per-request timeout override.
@@ -51,6 +66,7 @@ def download_file(url: str, dst_file: str, session=None, expected_size: Optional
     :returns: Number of bytes written.
     :rtype: int
     :raises DownloadSizeMismatch: When ``expected_size`` is given and does not match.
+    :raises DownloadDigestMismatch: When ``expected_md5`` is given and does not match.
     """
     session = session or get_requests_session()
     if os.path.dirname(dst_file):
@@ -58,6 +74,7 @@ def download_file(url: str, dst_file: str, session=None, expected_size: Optional
     tmp_file = f'{dst_file}.tmp'
     if timeout is not None:
         kwargs['timeout'] = timeout
+    hash_obj = md5() if expected_md5 else None
 
     try:
         size = 0
@@ -69,6 +86,8 @@ def download_file(url: str, dst_file: str, session=None, expected_size: Optional
                         if chunk:
                             f.write(chunk)
                             size += len(chunk)
+                            if hash_obj is not None:
+                                hash_obj.update(chunk)
         else:
             resp = session.get(url, stream=True, **kwargs)
             resp.raise_for_status()
@@ -77,9 +96,15 @@ def download_file(url: str, dst_file: str, session=None, expected_size: Optional
                     if chunk:
                         f.write(chunk)
                         size += len(chunk)
+                        if hash_obj is not None:
+                            hash_obj.update(chunk)
 
         if expected_size is not None and size != expected_size:
             raise DownloadSizeMismatch(url, expected_size, size)
+        if hash_obj is not None:
+            actual = hash_obj.hexdigest()
+            if actual != expected_md5:
+                raise DownloadDigestMismatch(url, expected_md5, actual)
 
         os.replace(tmp_file, dst_file)
         return size
@@ -201,6 +226,7 @@ def log_disk_usage(path: str, prefix: str = 'Disk'):
 
 __all__ = [
     'DownloadSizeMismatch',
+    'DownloadDigestMismatch',
     'download_file',
     'parallel_call',
     'iter_chunks',

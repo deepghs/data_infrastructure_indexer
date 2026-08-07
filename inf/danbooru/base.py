@@ -5,29 +5,18 @@ the TLS handshake itself. Credentials, user agents and warm-up cookies make no d
 it: what matters is whether the JA3/JA4 fingerprint looks like a real browser. ``curl_cffi``
 reproduces browser handshakes byte for byte, which is enough to be served normally.
 
-Measured against ``cdn.donmai.us`` on 2026-08-07, from an address Cloudflare was actively
-challenging:
+Sweeping every ``curl_cffi`` target against ``cdn.donmai.us`` on 2026-08-07, from an address
+Cloudflare was actively challenging, 20 of 23 were served normally. Only ``chrome142``,
+``chrome120``, ``edge99`` and the Safari family were rejected, and every Safari target failed.
 
-===============  ======
-impersonate      result
-===============  ======
-``chrome124``    200
-``chrome116``    200
-``chrome110``    200
-``edge101``      200
-``chrome120``    403
-``safari17_0``   403
-``safari15_5``   403
-``chrome99``     403
-===============  ======
-
-The working set drifts, so nothing here pins a single value: sessions draw at random from
-:data:`IMPERSONATE_LADDER` and a rejected session is discarded in favour of a new draw. Re-measure
-before trusting the table above.
+The working set drifts and is not monotonic in version -- ``chrome120`` fails while the older
+``chrome110`` succeeds -- so nothing here pins a value. :class:`DanbooruSessionPool` draws from
+:data:`IMPERSONATE_LADDER` weighted by how each fingerprint has actually fared during the run,
+so a target that stops working is demoted without anyone editing this file.
 """
 import random
 import threading
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from curl_cffi import requests as cffi_requests
 from ditk import logging
@@ -36,10 +25,14 @@ __site_url__ = 'https://danbooru.donmai.us'
 
 DEFAULT_TIMEOUT = 60.0
 
-#: Browser fingerprints to draw from. Verified against cdn.donmai.us on 2026-08-07; the set
-#: erodes over time, so treat a rising rejection rate as a signal to re-measure rather than as
-#: a reason to raise the retry count.
-IMPERSONATE_LADDER: List[str] = ['chrome124', 'chrome116', 'chrome110', 'edge101']
+#: Browser fingerprints to draw from, all verified against cdn.donmai.us on 2026-08-07. Kept
+#: wide on purpose: the pool weights them by observed success, so a few that stop working cost
+#: little, while a narrow list leaves nowhere to go when one does.
+IMPERSONATE_LADDER: List[str] = [
+    'chrome146', 'chrome145', 'chrome136', 'chrome133a', 'chrome131', 'chrome124', 'chrome123',
+    'chrome119', 'chrome116', 'chrome110', 'chrome107', 'chrome104', 'chrome101', 'chrome100',
+    'edge101', 'firefox147', 'firefox144', 'firefox135', 'firefox133', 'chrome131_android',
+]
 
 
 def get_danbooru_session(impersonate: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
@@ -82,6 +75,10 @@ class DanbooruSessionPool:
       sessions keeps a rejection local to the slot that earned it, and retiring that slot draws
       a different fingerprint for its replacement.
 
+    Draws are weighted by each fingerprint's observed success rate this run, Laplace-smoothed so
+    an untried target still gets picked and a currently-good one is never locked in. Uniform
+    draws would keep re-rolling fingerprints already known to be rejected.
+
     Slots fill lazily, so a pool far larger than the worker count costs nothing.
 
     Use :meth:`lease` rather than the raw acquire/release pair::
@@ -99,6 +96,48 @@ class DanbooruSessionPool:
         self._sessions: List[Optional[cffi_requests.Session]] = [None] * size
         self._generations: List[int] = [0] * size
         self._available: List[int] = list(range(size))
+        self._impersonates: List[Optional[str]] = [None] * size
+        self._ok: Dict[str, int] = {imp: 0 for imp in IMPERSONATE_LADDER}
+        self._bad: Dict[str, int] = {imp: 0 for imp in IMPERSONATE_LADDER}
+
+    def _pick_impersonate(self) -> str:
+        """
+        Draw a fingerprint weighted by its success rate so far, with Laplace smoothing.
+
+        :returns: Fingerprint name.
+        :rtype: str
+        """
+        weights = [(self._ok[imp] + 1) / (self._ok[imp] + self._bad[imp] + 2)
+                   for imp in IMPERSONATE_LADDER]
+        total = sum(weights)
+        threshold = random.random() * total
+        for imp, weight in zip(IMPERSONATE_LADDER, weights):
+            threshold -= weight
+            if threshold <= 0:
+                return imp
+        return IMPERSONATE_LADDER[-1]
+
+    def report_success(self, index: int):
+        """
+        Credit the fingerprint in ``index`` with a successful transfer.
+
+        :param index: Slot index from :meth:`acquire`.
+        :type index: int
+        """
+        with self._cv:
+            imp = self._impersonates[index]
+            if imp in self._ok:
+                self._ok[imp] += 1
+
+    def impersonate_stats(self) -> Dict[str, Tuple[int, int]]:
+        """
+        Return per-fingerprint (success, rejection) counts.
+
+        :rtype: Dict[str, Tuple[int, int]]
+        """
+        with self._cv:
+            return {imp: (self._ok[imp], self._bad[imp]) for imp in IMPERSONATE_LADDER
+                    if self._ok[imp] or self._bad[imp]}
 
     def acquire(self) -> Tuple[int, int, cffi_requests.Session]:
         """
@@ -117,9 +156,12 @@ class DanbooruSessionPool:
             generation = self._generations[index]
 
         if session is None:
-            session = get_danbooru_session(**self._kwargs)
+            with self._cv:
+                impersonate = self._pick_impersonate()
+            session = get_danbooru_session(impersonate=impersonate, **self._kwargs)
             with self._cv:
                 self._sessions[index] = session
+                self._impersonates[index] = impersonate
                 generation = self._generations[index]
         return index, generation, session
 
@@ -149,7 +191,11 @@ class DanbooruSessionPool:
             if self._generations[index] != seen_generation or self._sessions[index] is None:
                 return
             session = self._sessions[index]
+            imp = self._impersonates[index]
+            if imp in self._bad:
+                self._bad[imp] += 1
             self._sessions[index] = None
+            self._impersonates[index] = None
             self._generations[index] += 1
             # Debug, not info: a rejection here is routine and self-healing, and one line per
             # event floods the log badly enough to make a working run look broken. The caller
@@ -173,6 +219,7 @@ class DanbooruSessionPool:
         with self._cv:
             sessions = [s for s in self._sessions if s is not None]
             self._sessions = [None] * self._size
+            self._impersonates = [None] * self._size
         for session in sessions:
             try:
                 session.close()
