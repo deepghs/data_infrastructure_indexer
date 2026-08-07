@@ -30,9 +30,11 @@ pynacl
 tqdm
 hbutils
 requests
-# HTTP/2 is mandatory for donmai.us: Cloudflare 403s HTTP/1.1 clients there, so the h2 extra
-# must be an explicit dependency rather than something inherited from another package.
 httpx[http2]
+# Cloudflare on donmai.us scores the TLS handshake itself, so neither credentials nor headers
+# help. curl_cffi reproduces browser handshakes byte-for-byte, which is what gets the CDN to
+# serve us; it must be a declared dependency rather than an inherited one.
+curl_cffi
 numpy
 natsort
 pytimeparse>=1.1.8

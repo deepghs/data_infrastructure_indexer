@@ -122,8 +122,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
           REMOTE_REPOSITORY_DB_N_DL: ${{ secrets.REMOTE_REPOSITORY_DB_N_DL }}
-          DANBOORU_USERNAME: ${{ secrets.DANBOORU_USERNAME }}
-          DANBOORU_APITOKEN: ${{ secrets.DANBOORU_APITOKEN }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '4000' }}
           MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '8589934592' }}

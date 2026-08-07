@@ -1,86 +1,197 @@
 """Shared Danbooru session helpers.
 
-``cdn.donmai.us`` and ``danbooru.donmai.us`` sit behind a Cloudflare bot classifier that
-rejects plain HTTP/1.1 clients with a 403 challenge page regardless of credentials. Two
-things get through, and both are required:
+``cdn.donmai.us`` and ``danbooru.donmai.us`` sit behind a Cloudflare bot classifier that scores
+the TLS handshake itself. Credentials, user agents and warm-up cookies make no difference to
+it: what matters is whether the JA3/JA4 fingerprint looks like a real browser. ``curl_cffi``
+reproduces browser handshakes byte for byte, which is enough to be served normally.
 
-* an **HTTP/2** connection, so the TLS/ALPN handshake matches a real browser, and
-* a **warm-up request** against ``posts.json``, which hands back the ``_danbooru2_session``
-  cookie that subsequent CDN requests are checked against.
+Measured against ``cdn.donmai.us`` on 2026-08-07, from an address Cloudflare was actively
+challenging:
 
-A session built this way downloads originals, including posts flagged deleted, at their exact
-announced size. This mirrors what the long-running Danbooru sync job does.
+===============  ======
+impersonate      result
+===============  ======
+``chrome124``    200
+``chrome116``    200
+``chrome110``    200
+``edge101``      200
+``chrome120``    403
+``safari17_0``   403
+``safari15_5``   403
+``chrome99``     403
+===============  ======
+
+The working set drifts, so nothing here pins a single value: sessions draw at random from
+:data:`IMPERSONATE_LADDER` and a rejected session is discarded in favour of a new draw. Re-measure
+before trusting the table above.
 """
-import time
-from typing import Optional
+import random
+import threading
+from typing import List, Optional, Tuple
 
-import httpx
+from curl_cffi import requests as cffi_requests
 from ditk import logging
-
-from inf.utils.session import get_random_ua
 
 __site_url__ = 'https://danbooru.donmai.us'
 
-DEFAULT_TIMEOUT = 15.0
+DEFAULT_TIMEOUT = 60.0
+
+#: Browser fingerprints to draw from. Verified against cdn.donmai.us on 2026-08-07; the set
+#: erodes over time, so treat a rising rejection rate as a signal to re-measure rather than as
+#: a reason to raise the retry count.
+IMPERSONATE_LADDER: List[str] = ['chrome124', 'chrome116', 'chrome110', 'edge101']
 
 
-def get_danbooru_session(max_retries: int = 10, timeout: float = DEFAULT_TIMEOUT,
-                         proxy_pool: Optional[str] = None, retry_wait_time: float = 5.0,
-                         username: Optional[str] = None, apitoken: Optional[str] = None) -> httpx.Client:
+def get_danbooru_session(impersonate: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
+                         proxy_pool: Optional[str] = None) -> cffi_requests.Session:
     """
-    Build an HTTP/2 client that has already cleared Danbooru's Cloudflare check.
+    Build a browser-impersonating session for donmai.us.
 
-    Each attempt uses a fresh client and a fresh user agent, because a rejected fingerprint
-    stays rejected for the life of that connection. The client is returned only after the
-    warm-up call succeeds, so callers never have to handle the challenge themselves.
+    No warm-up request is made. Cloudflare admits these sessions on the handshake alone, and a
+    warm-up would only spend a request against the more tightly rate-limited API host.
 
-    :param max_retries: Number of warm-up attempts before giving up.
-    :type max_retries: int
-    :param timeout: Per-request timeout in seconds.
+    :param impersonate: Fingerprint to use. A random entry of :data:`IMPERSONATE_LADDER` when
+        omitted.
+    :type impersonate: Optional[str]
+    :param timeout: Default per-request timeout in seconds.
     :type timeout: float
-    :param proxy_pool: Proxy URL for every request made through this client.
+    :param proxy_pool: Proxy URL applied to every request.
     :type proxy_pool: Optional[str]
-    :param retry_wait_time: Base seconds to wait between attempts; grows linearly.
-    :type retry_wait_time: float
-    :param username: Danbooru account name, used for the warm-up call when paired with a token.
-    :type username: Optional[str]
-    :param apitoken: Danbooru API key, used for the warm-up call when paired with a name.
-    :type apitoken: Optional[str]
-    :returns: A warmed-up client carrying the session cookie.
-    :rtype: httpx.Client
-    :raises RuntimeError: When no attempt manages to clear the check.
+    :returns: A ready-to-use session.
+    :rtype: curl_cffi.requests.Session
     """
-    auth = (username, apitoken) if username and apitoken else None
-    for attempt in range(1, max_retries + 1):
-        kwargs = dict(http2=True, timeout=timeout, follow_redirects=True)
-        if proxy_pool:
-            kwargs['proxy'] = proxy_pool
-        session = httpx.Client(**kwargs)
-        session.headers.update({'User-Agent': get_random_ua()})
+    impersonate = impersonate or random.choice(IMPERSONATE_LADDER)
+    kwargs = dict(impersonate=impersonate, timeout=timeout)
+    if proxy_pool:
+        kwargs['proxies'] = {'http': proxy_pool, 'https': proxy_pool}
+    session = cffi_requests.Session(**kwargs)
+    session.headers.update({'Referer': f'{__site_url__}/'})
+    return session
 
+
+class DanbooruSessionPool:
+    """
+    A pool of impersonating sessions, leased one at a time and replaced when rejected.
+
+    Two properties drive the design:
+
+    * ``curl_cffi.requests.Session`` is **not** thread-safe, unlike ``requests.Session``. A slot
+      is therefore leased exclusively for the duration of one download and returned afterwards,
+      rather than shared across workers.
+    * Cloudflare scores a fingerprint per connection. Spreading work over many independent
+      sessions keeps a rejection local to the slot that earned it, and retiring that slot draws
+      a different fingerprint for its replacement.
+
+    Slots fill lazily, so a pool far larger than the worker count costs nothing.
+
+    Use :meth:`lease` rather than the raw acquire/release pair::
+
+        with pool.lease() as (slot, generation, session):
+            ...
+    """
+
+    def __init__(self, size: int = 32, **kwargs):
+        if size < 1:
+            raise ValueError(f'Session pool size should be positive, but {size!r} found.')
+        self._kwargs = kwargs
+        self._size = size
+        self._cv = threading.Condition()
+        self._sessions: List[Optional[cffi_requests.Session]] = [None] * size
+        self._generations: List[int] = [0] * size
+        self._available: List[int] = list(range(size))
+
+    def acquire(self) -> Tuple[int, int, cffi_requests.Session]:
+        """
+        Lease a random free slot, building its session when the slot is empty.
+
+        Blocks while every slot is leased, which only happens when workers outnumber slots.
+
+        :returns: Tuple of (slot index, slot generation, session).
+        :rtype: Tuple[int, int, curl_cffi.requests.Session]
+        """
+        with self._cv:
+            while not self._available:
+                self._cv.wait()
+            index = self._available.pop(random.randrange(len(self._available)))
+            session = self._sessions[index]
+            generation = self._generations[index]
+
+        if session is None:
+            session = get_danbooru_session(**self._kwargs)
+            with self._cv:
+                self._sessions[index] = session
+                generation = self._generations[index]
+        return index, generation, session
+
+    def release(self, index: int):
+        """
+        Return a leased slot to the pool.
+
+        :param index: Slot index from :meth:`acquire`.
+        :type index: int
+        """
+        with self._cv:
+            if index not in self._available:
+                self._available.append(index)
+            self._cv.notify()
+
+    def retire(self, index: int, seen_generation: int):
+        """
+        Discard the session in ``index`` so the next lease draws a new fingerprint.
+
+        :param index: Slot the caller was using.
+        :type index: int
+        :param seen_generation: Generation the caller saw, so a slot rejected twice is only
+            replaced once.
+        :type seen_generation: int
+        """
+        with self._cv:
+            if self._generations[index] != seen_generation or self._sessions[index] is None:
+                return
+            session = self._sessions[index]
+            self._sessions[index] = None
+            self._generations[index] += 1
+            logging.info(f'Retiring session slot #{index} after an upstream rejection.')
+        # Closing outside the lock: this slot is leased by the caller, so nobody else holds it.
         try:
-            resp = session.get(
-                f'{__site_url__}/posts.json',
-                params={'format': 'json', 'tags': '1girl', 'limit': 1},
-                auth=auth,
-            )
-        except httpx.HTTPError as err:
-            logging.warning(f'Danbooru warm-up attempt {attempt}/{max_retries} failed - {err!r}.')
             session.close()
-            time.sleep(retry_wait_time * attempt)
-            continue
+        except Exception:  # pragma: no cover - a dead session must not abort the run
+            pass
 
-        if resp.status_code // 100 == 2:
-            logging.info(f'Danbooru session established on attempt {attempt}, '
-                         f'cookies: {list(session.cookies.keys())!r}.')
-            return session
+    def lease(self):
+        """
+        Context manager wrapping :meth:`acquire` and :meth:`release`.
 
-        logging.warning(f'Danbooru warm-up attempt {attempt}/{max_retries} rejected with '
-                        f'HTTP {resp.status_code}, retry with a new fingerprint.')
-        session.close()
-        time.sleep(retry_wait_time * attempt)
+        :returns: Context manager yielding (slot index, slot generation, session).
+        """
+        return _SessionLease(self)
 
-    raise RuntimeError(f'Unable to establish a Danbooru session after {max_retries} attempt(s).')
+    def close(self):
+        with self._cv:
+            sessions = [s for s in self._sessions if s is not None]
+            self._sessions = [None] * self._size
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:  # pragma: no cover
+                pass
 
 
-__all__ = ['get_danbooru_session', '__site_url__']
+class _SessionLease:
+    def __init__(self, pool: DanbooruSessionPool):
+        self._pool = pool
+        self._index: Optional[int] = None
+
+    def __enter__(self):
+        index, generation, session = self._pool.acquire()
+        self._index = index
+        return index, generation, session
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._index is not None:
+            self._pool.release(self._index)
+            self._index = None
+        return False
+
+
+__all__ = ['get_danbooru_session', 'DanbooruSessionPool', 'IMPERSONATE_LADDER', '__site_url__']

@@ -60,7 +60,6 @@ import json
 import logging as _logging
 import math
 import os
-import random
 import shutil
 import tarfile
 import time
@@ -86,7 +85,7 @@ from tqdm import tqdm
 from inf.utils.download import download_file, parallel_call, get_free_disk_bytes, log_disk_usage
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
-from .base import get_danbooru_session, __site_url__  # noqa: F401 - re-exported for callers
+from .base import DanbooruSessionPool, __site_url__  # noqa: F401 - re-exported for callers
 
 # Danbooru serves genuinely huge originals; the default bomb guard would reject valid posts.
 Image.MAX_IMAGE_PIXELS = 32768 ** 2
@@ -133,87 +132,6 @@ def _verify_md5(local_file: str, expected_md5: Optional[str], chunk_size: int = 
     if actual != expected_md5:
         raise ValueError(f'MD5 mismatch for {os.path.basename(local_file)!r} - '
                          f'{expected_md5!r} expected, {actual!r} found.')
-
-
-class _SessionPool:
-    """
-    A pool of warmed-up Danbooru clients, drawn from at random and replaced slot by slot.
-
-    Cloudflare scores a fingerprint for the life of its connection, so one shared client means
-    one shared fate: the moment it is challenged every worker is stuck behind the same rebuild.
-    Spreading requests over many independent clients keeps a rejection local to the slot that
-    earned it, and the other slots keep working while it is replaced.
-
-    Slots are filled lazily. Warming 32 sessions at start-up would fire 32 near-simultaneous
-    requests at ``posts.json``, which is exactly the burst that gets a run throttled.
-
-    A retired client is never closed while the run is going: other workers are probably still
-    streaming from it, and closing a shared ``httpx.Client`` out from under them turns their
-    in-flight downloads into protocol errors. They are all closed together at the end.
-    """
-
-    def __init__(self, size: int = 32, **kwargs):
-        if size < 1:
-            raise ValueError(f'Session pool size should be positive, but {size!r} found.')
-        self._kwargs = kwargs
-        self._size = size
-        self._lock = Lock()
-        self._slots: List[Optional[object]] = [None] * size
-        self._generations: List[int] = [0] * size
-        self._retired: List[object] = []
-
-    def acquire(self):
-        """
-        Pick a random slot, warming it up first when it is empty.
-
-        :returns: Tuple of (slot index, slot generation, client).
-        """
-        index = random.randrange(self._size)
-        with self._lock:
-            session = self._slots[index]
-            generation = self._generations[index]
-        if session is not None:
-            return index, generation, session
-
-        # Warm up outside the lock; it performs a network round trip and would otherwise stall
-        # every other worker.
-        fresh = get_danbooru_session(**self._kwargs)
-        with self._lock:
-            if self._slots[index] is None:
-                self._slots[index] = fresh
-            else:
-                # Another worker filled this slot first; keep theirs and retire ours.
-                self._retired.append(fresh)
-            return index, self._generations[index], self._slots[index]
-
-    def retire(self, index: int, seen_generation: int):
-        """
-        Drop the client in ``index`` so the next draw warms up a replacement.
-
-        :param index: Slot the caller was using.
-        :type index: int
-        :param seen_generation: Generation the caller saw, so two workers failing on the same
-            client only retire it once.
-        :type seen_generation: int
-        """
-        with self._lock:
-            if self._generations[index] != seen_generation or self._slots[index] is None:
-                return
-            logging.info(f'Retiring session slot #{index} after an upstream rejection.')
-            self._retired.append(self._slots[index])
-            self._slots[index] = None
-            self._generations[index] += 1
-
-    def close(self):
-        with self._lock:
-            sessions = [s for s in self._slots if s is not None] + self._retired
-            self._slots = [None] * self._size
-            self._retired = []
-        for session in sessions:
-            try:
-                session.close()
-            except Exception:  # pragma: no cover - a dead client must not abort the run
-                pass
 
 
 def _volume_paths(volume_id: int):
@@ -489,8 +407,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
          min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
          max_volumes: Optional[int] = None, cf_retries: int = 6, cf_retry_wait: float = 3.0,
-         max_blocked_ratio: float = 0.3, username: Optional[str] = None,
-         apitoken: Optional[str] = None, proxy_pool: Optional[str] = None):
+         max_blocked_ratio: float = 0.3, proxy_pool: Optional[str] = None):
     """
     Download missing Danbooru originals into append-only tar volumes in the staging repository.
 
@@ -532,10 +449,6 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :param max_blocked_ratio: Abort the run when this fraction of a volume fails for reasons
         other than the post being gone upstream.
     :type max_blocked_ratio: float
-    :param username: Danbooru account name, used on the session warm-up call.
-    :type username: Optional[str]
-    :param apitoken: Danbooru API key, used on the session warm-up call.
-    :type apitoken: Optional[str]
     :param proxy_pool: Proxy URL applied to every upstream request.
     :type proxy_pool: Optional[str]
     """
@@ -571,8 +484,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 
     # Cloudflare rejects plain HTTP/1.1 clients on every donmai.us host, so the CDN is only
     # reachable through a warmed-up HTTP/2 session. See inf/danbooru/base.py.
-    pool = _SessionPool(size=session_pool_size, proxy_pool=proxy_pool,
-                        username=username, apitoken=apitoken)
+    pool = DanbooruSessionPool(size=session_pool_size, proxy_pool=proxy_pool)
 
     volumes_done = 0
     pending = candidates
@@ -616,6 +528,26 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             lock = Lock()
 
             with tarfile.open(tar_file, 'w:') as tar:
+                def _handle(err, item, attempt, slot, generation):
+                    kind = _classify_error(err)
+                    if kind == 'permanent':
+                        # Genuinely gone upstream: record it so later runs skip it.
+                        with lock:
+                            volume_bad.append(item['id'])
+                        logging.warning(f'Post {item["id"]} is gone - {err!r}')
+                        raise err
+                    if attempt >= cf_retries:
+                        logging.warning(f'Post {item["id"]} skipped after {attempt} attempts - {err!r}')
+                        raise err
+                    if kind == 'throttle':
+                        # Cloudflare pushed back on this fingerprint. Never a property of the
+                        # post, so it must not blacklist the id; discard the session so the next
+                        # lease draws a different fingerprint.
+                        with lock:
+                            throttled[0] += 1
+                        pool.retire(slot, generation)
+                    time.sleep(cf_retry_wait * attempt)
+
                 def _fn_download(item):
                     with lock:
                         if sealed[0]:
@@ -630,39 +562,20 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                     try:
                         size = width = height = None
                         for attempt in range(1, cf_retries + 1):
-                            slot, generation, session = pool.acquire()
-                            try:
-                                size = download_file(item['file_url'], dst_file,
-                                                     session=session,
-                                                     expected_size=item['file_size'])
-                                _verify_md5(dst_file, item['md5'])
-                                # A 200 carrying an HTML error body would clear the size and md5
-                                # checks only by miracle, but the header parse is nearly free.
-                                with Image.open(dst_file) as image:
-                                    width, height = image.size
-                                break
-                            except Exception as err:
-                                kind = _classify_error(err)
-                                if kind == 'permanent':
-                                    # Genuinely gone upstream: record it so later runs skip it.
-                                    with lock:
-                                        volume_bad.append(item['id'])
-                                    logging.warning(f'Post {item["id"]} is gone - {err!r}')
-                                    raise
-                                if attempt >= cf_retries:
-                                    logging.warning(f'Post {item["id"]} skipped after '
-                                                    f'{attempt} attempts - {err!r}')
-                                    raise
-                                if kind == 'throttle':
-                                    # Cloudflare or a rate limit pushed back. Never a property of
-                                    # the post, so it must not blacklist the id; take a fresh
-                                    # fingerprint and back off, since rejections arrive in bursts
-                                    # and an instant retry just feeds the same burst.
-                                    with lock:
-                                        throttled[0] += 1
-                                    pool.retire(slot, generation)
-                                time.sleep(cf_retry_wait * attempt)
-
+                            with pool.lease() as (slot, generation, session):
+                                try:
+                                    size = download_file(item['file_url'], dst_file,
+                                                         session=session,
+                                                         expected_size=item['file_size'])
+                                    _verify_md5(dst_file, item['md5'])
+                                    # A 200 carrying an HTML error body would clear the size and
+                                    # md5 checks only by miracle, but the header parse is cheap.
+                                    with Image.open(dst_file) as image:
+                                        width, height = image.size
+                                except Exception as err:
+                                    _handle(err, item, attempt, slot, generation)
+                                    continue
+                            break
                         with lock:
                             tar.add(dst_file, filename)
                             volume_bytes[0] += size
@@ -894,22 +807,6 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
          'being gone upstream.',
 )
 @click.option(
-    '-U', '--username',
-    type=str,
-    envvar='DANBOORU_USERNAME',
-    default=None,
-    show_envvar=True,
-    help='Danbooru account name used for authenticated upstream requests.',
-)
-@click.option(
-    '-A', '--apitoken',
-    type=str,
-    envvar='DANBOORU_APITOKEN',
-    default=None,
-    show_envvar=True,
-    help='Danbooru API key used for authenticated upstream requests.',
-)
-@click.option(
     '-p', '--proxy-pool',
     type=str,
     envvar='PP_DB',
@@ -922,8 +819,7 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         download_workers: int, session_pool_size: int, min_free_disk: int,
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
         max_volumes: Optional[int], cf_retries: int, cf_retry_wait: float,
-        max_blocked_ratio: float, username: Optional[str], apitoken: Optional[str],
-        proxy_pool: Optional[str]):
+        max_blocked_ratio: float, proxy_pool: Optional[str]):
     logging.try_init_root(logging.INFO)
     return sync(
         repository=repository,
@@ -943,8 +839,6 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         cf_retries=cf_retries,
         cf_retry_wait=cf_retry_wait,
         max_blocked_ratio=max_blocked_ratio,
-        username=username,
-        apitoken=apitoken,
         proxy_pool=proxy_pool,
     )
 
