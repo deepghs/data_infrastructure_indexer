@@ -11,15 +11,15 @@ on:
       max_volume_files:
         description: 'Maximum entries per tar volume'
         required: false
-        default: '1500'
+        default: '4000'
       max_volume_bytes:
         description: 'Approximate byte budget per tar volume'
         required: false
-        default: '2147483648'
+        default: '5368709120'
       max_volume_hard_bytes:
         description: 'Hard ceiling on bytes actually written into one tar'
         required: false
-        default: '3221225472'
+        default: '6979321856'
       session_pool_size:
         description: 'Session pool size (0 = workers + 4)'
         required: false
@@ -129,9 +129,9 @@ jobs:
           REMOTE_REPOSITORY_DB_N: ${{ secrets.REMOTE_REPOSITORY_DB_N }}
           REMOTE_REPOSITORY_DB_N_DL: ${{ secrets.REMOTE_REPOSITORY_DB_N_DL }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
-          MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '1500' }}
-          MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '2147483648' }}
-          MAX_VOLUME_HARD_BYTES: ${{ github.event.inputs.max_volume_hard_bytes || '3221225472' }}
+          MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '4000' }}
+          MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '5368709120' }}
+          MAX_VOLUME_HARD_BYTES: ${{ github.event.inputs.max_volume_hard_bytes || '6979321856' }}
           SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '0' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
           DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}

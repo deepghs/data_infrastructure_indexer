@@ -37,7 +37,9 @@ This job is expected to run on a GitHub-hosted free runner, where free disk is t
 constraint rather than CPU or memory:
 
 * Volume boundaries are planned up-front from ``file_size`` in the index, which keeps a volume
-  near ``--max-volume-bytes``.
+  near ``--max-volume-bytes``. Measured headroom for the 5 GB default: a runner reports 145 GB
+  total and holds steady at 107 GB free through a five-volume run, peaking at 38 GB used, and
+  the upload path streams from the tar rather than copying it, so peak usage is the tar itself.
 * That plan is only an estimate, so a second, authoritative check runs against what actually
   lands on disk: once a tar passes ``--max-volume-hard-bytes``, or free space drops under
   ``--min-free-disk``, the volume is sealed on the spot, indexed, uploaded and deleted, and
@@ -380,10 +382,10 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 
 
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
-         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 1500,
-         max_volume_bytes: int = 2 * 1024 ** 3, max_volume_hard_bytes: int = 3 * 1024 ** 3,
+         max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 4000,
+         max_volume_bytes: int = 5 * 1024 ** 3, max_volume_hard_bytes: int = 6656 * 1024 ** 2,
          download_workers: int = 16, session_pool_size: int = 0,
-         min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
+         min_free_disk: int = 20 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
          max_volumes: Optional[int] = None, retire_after: int = 2,
          initial_rate: float = 4.0, max_rate: float = 64.0,
@@ -780,21 +782,22 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-f', '--max-volume-files',
     type=int,
-    default=1500,
+    default=4000,
     show_default=True,
-    help='Maximum number of entries packed into one tar volume.',
+    help='Maximum number of entries packed into one tar volume. High enough that the byte budget '
+         'is normally what closes a volume.',
 )
 @click.option(
     '-b', '--max-volume-bytes',
     type=int,
-    default=2 * 1024 ** 3,
+    default=5 * 1024 ** 3,
     show_default=True,
     help='Approximate byte budget for one tar volume.',
 )
 @click.option(
     '-H', '--max-volume-hard-bytes',
     type=int,
-    default=3 * 1024 ** 3,
+    default=6656 * 1024 ** 2,
     show_default=True,
     help='Ceiling on the bytes actually written into a tar. Crossing it seals the volume '
          'immediately, uploads it, and moves the rest of the batch to the next volume.',
@@ -818,7 +821,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 @click.option(
     '-d', '--min-free-disk',
     type=int,
-    default=16 * 1024 ** 3,
+    default=20 * 1024 ** 3,
     show_default=True,
     help='Stop before starting a new volume when free disk falls below this many bytes.',
 )
