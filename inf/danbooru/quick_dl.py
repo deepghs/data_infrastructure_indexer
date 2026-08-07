@@ -36,8 +36,13 @@ Disk discipline
 This job is expected to run on a GitHub-hosted free runner, where free disk is the binding
 constraint rather than CPU or memory:
 
-* Volume boundaries are planned up-front from ``file_size`` in the index, so a volume never
-  overshoots ``--max-volume-bytes``.
+* Volume boundaries are planned up-front from ``file_size`` in the index, which keeps a volume
+  near ``--max-volume-bytes``.
+* That plan is only an estimate, so a second, authoritative check runs against what actually
+  lands on disk: once a tar passes ``--max-volume-hard-bytes``, or free space drops under
+  ``--min-free-disk``, the volume is sealed on the spot, indexed, uploaded and deleted, and
+  every post still queued for it moves to the next volume. A stale or wrong ``file_size`` in
+  the index therefore cannot fill the runner.
 * Each worker deletes its downloaded file the moment it lands in the tar, keeping in-flight
   bytes at roughly ``download_workers x average file size``.
 * The tar, its sidecar and the staging directory are removed immediately after the commit.
@@ -55,6 +60,7 @@ import json
 import logging as _logging
 import math
 import os
+import random
 import shutil
 import tarfile
 import time
@@ -129,56 +135,85 @@ def _verify_md5(local_file: str, expected_md5: Optional[str], chunk_size: int = 
                          f'{expected_md5!r} expected, {actual!r} found.')
 
 
-class _SessionHolder:
+class _SessionPool:
     """
-    Hold the shared Danbooru client and allow workers to swap it out after a challenge.
+    A pool of warmed-up Danbooru clients, drawn from at random and replaced slot by slot.
 
-    Cloudflare rejects a fingerprint for the life of the connection, so recovering means
-    building a whole new client rather than retrying on the old one. Workers pass the
-    generation they were using; whoever reports first does the rebuild and the rest pick up
-    the replacement, so a burst of concurrent 403s costs one warm-up instead of one per thread.
+    Cloudflare scores a fingerprint for the life of its connection, so one shared client means
+    one shared fate: the moment it is challenged every worker is stuck behind the same rebuild.
+    Spreading requests over many independent clients keeps a rejection local to the slot that
+    earned it, and the other slots keep working while it is replaced.
+
+    Slots are filled lazily. Warming 32 sessions at start-up would fire 32 near-simultaneous
+    requests at ``posts.json``, which is exactly the burst that gets a run throttled.
+
+    A retired client is never closed while the run is going: other workers are probably still
+    streaming from it, and closing a shared ``httpx.Client`` out from under them turns their
+    in-flight downloads into protocol errors. They are all closed together at the end.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, size: int = 32, **kwargs):
+        if size < 1:
+            raise ValueError(f'Session pool size should be positive, but {size!r} found.')
         self._kwargs = kwargs
+        self._size = size
         self._lock = Lock()
-        self._generation = 0
-        self._session = get_danbooru_session(**kwargs)
+        self._slots: List[Optional[object]] = [None] * size
+        self._generations: List[int] = [0] * size
+        self._retired: List[object] = []
 
-    @property
-    def session(self):
-        return self._session
-
-    @property
-    def generation(self) -> int:
-        return self._generation
-
-    def refresh(self, seen_generation: int):
+    def acquire(self):
         """
-        Replace the client unless another worker already replaced this generation.
+        Pick a random slot, warming it up first when it is empty.
 
-        :param seen_generation: Generation the caller was using when it hit the challenge.
+        :returns: Tuple of (slot index, slot generation, client).
+        """
+        index = random.randrange(self._size)
+        with self._lock:
+            session = self._slots[index]
+            generation = self._generations[index]
+        if session is not None:
+            return index, generation, session
+
+        # Warm up outside the lock; it performs a network round trip and would otherwise stall
+        # every other worker.
+        fresh = get_danbooru_session(**self._kwargs)
+        with self._lock:
+            if self._slots[index] is None:
+                self._slots[index] = fresh
+            else:
+                # Another worker filled this slot first; keep theirs and retire ours.
+                self._retired.append(fresh)
+            return index, self._generations[index], self._slots[index]
+
+    def retire(self, index: int, seen_generation: int):
+        """
+        Drop the client in ``index`` so the next draw warms up a replacement.
+
+        :param index: Slot the caller was using.
+        :type index: int
+        :param seen_generation: Generation the caller saw, so two workers failing on the same
+            client only retire it once.
         :type seen_generation: int
         """
         with self._lock:
-            if seen_generation != self._generation:
-                return self._session
-            logging.info(f'Cloudflare challenge hit, rebuilding session '
-                         f'(generation {self._generation} -> {self._generation + 1}) ...')
-            old = self._session
-            self._session = get_danbooru_session(**self._kwargs)
-            self._generation += 1
-            try:
-                old.close()
-            except Exception:  # pragma: no cover - closing a dead client must not abort the run
-                pass
-            return self._session
+            if self._generations[index] != seen_generation or self._slots[index] is None:
+                return
+            logging.info(f'Retiring session slot #{index} after an upstream rejection.')
+            self._retired.append(self._slots[index])
+            self._slots[index] = None
+            self._generations[index] += 1
 
     def close(self):
-        try:
-            self._session.close()
-        except Exception:  # pragma: no cover
-            pass
+        with self._lock:
+            sessions = [s for s in self._slots if s is not None] + self._retired
+            self._slots = [None] * self._size
+            self._retired = []
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:  # pragma: no cover - a dead client must not abort the run
+                pass
 
 
 def _volume_paths(volume_id: int):
@@ -291,6 +326,60 @@ def _scan_candidates(src_repository: str, src_revision: str, covered_ids: set,
     return candidates
 
 
+#: Statuses meaning the post itself is gone. Only these may blacklist an id.
+_PERMANENT_STATUS = (404, 410)
+#: Statuses meaning the site is pushing back on us, never a property of the post. These trigger
+#: a session rebuild and a backoff, and must never blacklist an id.
+_THROTTLE_STATUS = (403, 429)
+
+
+def _classify_error(err: Exception) -> str:
+    """
+    Decide how a failed download should be handled.
+
+    :param err: Exception raised while fetching or validating a post.
+    :type err: Exception
+    :returns: ``'permanent'`` when the post is gone upstream, ``'throttle'`` when the site is
+        rejecting us and the session should be rebuilt, ``'transient'`` otherwise.
+    :rtype: str
+    """
+    status = getattr(getattr(err, 'response', None), 'status_code', None)
+    if status in _PERMANENT_STATUS:
+        return 'permanent'
+    if status in _THROTTLE_STATUS or (status is not None and status // 100 == 5):
+        return 'throttle'
+    return 'transient'
+
+
+def _take_volume(candidates: List[dict], start: int, max_volume_files: int, max_volume_bytes: int) -> int:
+    """
+    Return the exclusive end index of the next volume-sized slice of ``candidates``.
+
+    Boundaries come from the ``file_size`` published by the index. A post larger than the whole
+    budget still forms a volume of its own rather than being skipped.
+
+    :param candidates: Candidate rows in ascending id order.
+    :type candidates: List[dict]
+    :param start: Index to start the slice at.
+    :type start: int
+    :param max_volume_files: Hard cap on entries per volume.
+    :type max_volume_files: int
+    :param max_volume_bytes: Soft cap on uncompressed bytes per volume.
+    :type max_volume_bytes: int
+    :returns: Exclusive end index of the slice.
+    :rtype: int
+    """
+    end = start
+    total = 0
+    while end < len(candidates):
+        size = candidates[end]['file_size'] or 0
+        if end > start and (end - start >= max_volume_files or total + size > max_volume_bytes):
+            break
+        total += size
+        end += 1
+    return end
+
+
 def _plan_volumes(candidates: List[dict], max_volume_files: int, max_volume_bytes: int) -> List[List[dict]]:
     """
     Split candidates into volume-sized batches using the sizes announced by the index.
@@ -395,7 +484,8 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 
 def sync(repository: str, src_repository: str, src_revision: str = 'main',
          max_time_limit: Optional[float] = (60 * 5) * 60, max_volume_files: int = 4000,
-         max_volume_bytes: int = 8 * 1024 ** 3, download_workers: int = 16,
+         max_volume_bytes: int = 8 * 1024 ** 3, max_volume_hard_bytes: int = 12 * 1024 ** 3,
+         download_workers: int = 8, session_pool_size: int = 32,
          min_free_disk: int = 16 * 1024 ** 3, upload_time_span: float = 30,
          include_non_image: bool = False, glob_exist_ids_file: str = 'glob_exist_ids.json',
          max_volumes: Optional[int] = None, cf_retries: int = 6, cf_retry_wait: float = 3.0,
@@ -414,10 +504,15 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     :type max_time_limit: Optional[float]
     :param max_volume_files: Maximum entries per tar volume.
     :type max_volume_files: int
-    :param max_volume_bytes: Approximate byte budget per tar volume.
+    :param max_volume_bytes: Byte budget used when planning a volume from the index.
     :type max_volume_bytes: int
+    :param max_volume_hard_bytes: Ceiling on the bytes actually written into a tar. Crossing it
+        seals the volume immediately and moves the rest of the batch to the next one.
+    :type max_volume_hard_bytes: int
     :param download_workers: Concurrent download threads.
     :type download_workers: int
+    :param session_pool_size: Number of independent warmed-up clients to draw from.
+    :type session_pool_size: int
     :param min_free_disk: Stop before starting a volume when free disk drops below this.
     :type min_free_disk: int
     :param upload_time_span: Minimum seconds between commits.
@@ -476,10 +571,12 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 
     # Cloudflare rejects plain HTTP/1.1 clients on every donmai.us host, so the CDN is only
     # reachable through a warmed-up HTTP/2 session. See inf/danbooru/base.py.
-    holder = _SessionHolder(proxy_pool=proxy_pool, username=username, apitoken=apitoken)
+    pool = _SessionPool(size=session_pool_size, proxy_pool=proxy_pool,
+                        username=username, apitoken=apitoken)
 
     volumes_done = 0
-    for plan in plans:
+    pending = candidates
+    while pending:
         if max_time_limit is not None and start_time + max_time_limit < time.time():
             logging.info('Max time limit exceeded, stop scheduling new volumes.')
             break
@@ -493,6 +590,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             logging.warning(f'Only {free / 1024 ** 3:.2f} GB free, below the '
                             f'{min_free_disk / 1024 ** 3:.2f} GB floor - stop cleanly.')
             break
+
+        end = _take_volume(pending, 0, max_volume_files, max_volume_bytes)
+        plan, rest = pending[:end], pending[end:]
 
         max_volume_id += 1
         rel_tar, rel_index = _volume_paths(max_volume_id)
@@ -509,21 +609,31 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
 
             new_records: List[dict] = []
             volume_bad: List[int] = []
-            blocked = [0]
+            deferred: List[dict] = []
+            volume_bytes = [0]
+            sealed = [None]
+            throttled = [0]
             lock = Lock()
 
             with tarfile.open(tar_file, 'w:') as tar:
                 def _fn_download(item):
+                    with lock:
+                        if sealed[0]:
+                            # The valve tripped while this item was queued; hand it to the next
+                            # volume instead of spending bandwidth we cannot store.
+                            deferred.append(item)
+                            return
+
                     _, ext = os.path.splitext(urlsplit(item['file_url']).filename)
                     filename = f'{item["id"]}{ext}'
                     dst_file = os.path.join(stage_dir, filename)
                     try:
                         size = width = height = None
                         for attempt in range(1, cf_retries + 1):
-                            generation = holder.generation
+                            slot, generation, session = pool.acquire()
                             try:
                                 size = download_file(item['file_url'], dst_file,
-                                                     session=holder.session,
+                                                     session=session,
                                                      expected_size=item['file_size'])
                                 _verify_md5(dst_file, item['md5'])
                                 # A 200 carrying an HTML error body would clear the size and md5
@@ -532,29 +642,30 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                     width, height = image.size
                                 break
                             except Exception as err:
-                                status = getattr(getattr(err, 'response', None), 'status_code', None)
-                                if status in (404, 410):
+                                kind = _classify_error(err)
+                                if kind == 'permanent':
                                     # Genuinely gone upstream: record it so later runs skip it.
                                     with lock:
                                         volume_bad.append(item['id'])
-                                    logging.warning(f'Post {item["id"]} is gone (HTTP {status}).')
+                                    logging.warning(f'Post {item["id"]} is gone - {err!r}')
                                     raise
-                                if status == 403 and attempt < cf_retries:
-                                    # Cloudflare re-challenged us. This is never a property of the
-                                    # post, so it must not blacklist the id; swap in a session with
-                                    # a fresh fingerprint and try again. Back off first: challenges
-                                    # arrive in bursts while a run warms up, and retrying instantly
-                                    # just feeds the same burst.
+                                if attempt >= cf_retries:
+                                    logging.warning(f'Post {item["id"]} skipped after '
+                                                    f'{attempt} attempts - {err!r}')
+                                    raise
+                                if kind == 'throttle':
+                                    # Cloudflare or a rate limit pushed back. Never a property of
+                                    # the post, so it must not blacklist the id; take a fresh
+                                    # fingerprint and back off, since rejections arrive in bursts
+                                    # and an instant retry just feeds the same burst.
                                     with lock:
-                                        blocked[0] += 1
-                                    holder.refresh(generation)
-                                    time.sleep(cf_retry_wait * attempt)
-                                    continue
-                                logging.warning(f'Post {item["id"]} skipped - {err!r}')
-                                raise
+                                        throttled[0] += 1
+                                    pool.retire(slot, generation)
+                                time.sleep(cf_retry_wait * attempt)
 
                         with lock:
                             tar.add(dst_file, filename)
+                            volume_bytes[0] += size
                             new_records.append({
                                 'id': item['id'],
                                 'filename': filename,
@@ -568,6 +679,18 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                 'md5': item['md5'],
                                 'file_url': item['file_url'],
                             })
+                            # Safety valve. The planner trusts file_size from the index; this
+                            # checks what actually landed on disk, so a stale or wrong index
+                            # cannot grow the tar past what the runner can hold.
+                            if volume_bytes[0] >= max_volume_hard_bytes:
+                                sealed[0] = (f'tar reached {volume_bytes[0] / 1024 ** 3:.2f} GB, '
+                                             f'over the {max_volume_hard_bytes / 1024 ** 3:.2f} GB ceiling')
+                            elif get_free_disk_bytes(stage_dir) < min_free_disk:
+                                sealed[0] = (f'free disk fell below '
+                                             f'{min_free_disk / 1024 ** 3:.2f} GB')
+                            if sealed[0]:
+                                logging.warning(f'Sealing volume #{max_volume_id} early - '
+                                                f'{sealed[0]}; remaining posts move to the next volume.')
                     finally:
                         # Free the bytes immediately; in-flight footprint stays at roughly
                         # download_workers x average file size.
@@ -578,13 +701,15 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                               desc=f'Volume #{max_volume_id}')
 
             shutil.rmtree(stage_dir, ignore_errors=True)
+            pending = sorted(deferred, key=lambda x: x['id']) + rest
 
-            failed = len(plan) - len(new_records) - len(volume_bad)
-            if failed and failed >= len(plan) * max_blocked_ratio:
+            attempted = len(plan) - len(deferred)
+            failed = attempted - len(new_records) - len(volume_bad)
+            if failed and failed >= attempted * max_blocked_ratio:
                 # Sustained blocking wastes a volume id and a commit per attempt, so stop the run
                 # and let the next scheduled one start from a clean rate-limit window.
-                logging.error(f'{plural_word(failed, "post")} of {len(plan)} failed in volume '
-                              f'#{max_volume_id} ({blocked[0]} Cloudflare rejections) - '
+                logging.error(f'{plural_word(failed, "post")} of {attempted} failed in volume '
+                              f'#{max_volume_id} ({throttled[0]} upstream rejections) - '
                               f'aborting the run without publishing this volume.')
                 break
 
@@ -635,7 +760,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
         delete_detached_cache()
         log_disk_usage(os.getcwd(), prefix='Disk after volume')
 
-    holder.close()
+    pool.close()
     logging.info(f'Done, {plural_word(volumes_done, "volume")} published in this run, '
                  f'{plural_word(len(records), "image")} stored in total.')
 
@@ -692,11 +817,26 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     help='Approximate byte budget for one tar volume.',
 )
 @click.option(
+    '-H', '--max-volume-hard-bytes',
+    type=int,
+    default=12 * 1024 ** 3,
+    show_default=True,
+    help='Ceiling on the bytes actually written into a tar. Crossing it seals the volume '
+         'immediately, uploads it, and moves the rest of the batch to the next volume.',
+)
+@click.option(
     '-w', '--download-workers',
     type=int,
-    default=16,
+    default=8,
     show_default=True,
     help='Number of concurrent download threads.',
+)
+@click.option(
+    '-P', '--session-pool-size',
+    type=int,
+    default=32,
+    show_default=True,
+    help='Number of independent warmed-up sessions to draw from at random.',
 )
 @click.option(
     '-d', '--min-free-disk',
@@ -778,7 +918,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
     help='Proxy URL applied to every upstream request.',
 )
 def cli(repository: str, src_repository: str, src_revision: str, max_time_limit: Optional[float],
-        max_volume_files: int, max_volume_bytes: int, download_workers: int, min_free_disk: int,
+        max_volume_files: int, max_volume_bytes: int, max_volume_hard_bytes: int,
+        download_workers: int, session_pool_size: int, min_free_disk: int,
         upload_time_span: float, include_non_image: bool, glob_exist_ids_file: str,
         max_volumes: Optional[int], cf_retries: int, cf_retry_wait: float,
         max_blocked_ratio: float, username: Optional[str], apitoken: Optional[str],
@@ -791,7 +932,9 @@ def cli(repository: str, src_repository: str, src_revision: str, max_time_limit:
         max_time_limit=max_time_limit,
         max_volume_files=max_volume_files,
         max_volume_bytes=max_volume_bytes,
+        max_volume_hard_bytes=max_volume_hard_bytes,
         download_workers=download_workers,
+        session_pool_size=session_pool_size,
         min_free_disk=min_free_disk,
         upload_time_span=upload_time_span,
         include_non_image=include_non_image,

@@ -16,6 +16,14 @@ on:
         description: 'Approximate byte budget per tar volume'
         required: false
         default: '8589934592'
+      max_volume_hard_bytes:
+        description: 'Hard ceiling on bytes actually written into one tar'
+        required: false
+        default: '12884901888'
+      session_pool_size:
+        description: 'Number of warmed-up sessions to draw from'
+        required: false
+        default: '32'
       max_volumes:
         description: 'Stop after this many volumes (empty means unlimited)'
         required: false
@@ -23,7 +31,7 @@ on:
       download_workers:
         description: 'Concurrent download threads'
         required: false
-        default: '16'
+        default: '8'
   # Target cadence is every 8 hours. Kept commented until the job has proven itself,
   # matching how the other schedules in this repository are staged back in.
   #  schedule:
@@ -119,8 +127,10 @@ jobs:
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           MAX_VOLUME_FILES: ${{ github.event.inputs.max_volume_files || '4000' }}
           MAX_VOLUME_BYTES: ${{ github.event.inputs.max_volume_bytes || '8589934592' }}
+          MAX_VOLUME_HARD_BYTES: ${{ github.event.inputs.max_volume_hard_bytes || '12884901888' }}
+          SESSION_POOL_SIZE: ${{ github.event.inputs.session_pool_size || '32' }}
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
-          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '16' }}
+          DOWNLOAD_WORKERS: ${{ github.event.inputs.download_workers || '8' }}
         shell: bash
         run: |
           EXTRA=()
@@ -131,6 +141,8 @@ jobs:
             --max-time-limit "$MAX_TIME_LIMIT" \
             --max-volume-files "$MAX_VOLUME_FILES" \
             --max-volume-bytes "$MAX_VOLUME_BYTES" \
+            --max-volume-hard-bytes "$MAX_VOLUME_HARD_BYTES" \
+            --session-pool-size "$SESSION_POOL_SIZE" \
             --download-workers "$DOWNLOAD_WORKERS" \
             "${EXTRA[@]}"
       - name: Stop disk monitor
