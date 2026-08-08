@@ -18,9 +18,14 @@ Layout published to the staging repository
     table.parquet    one row per image actually written into a volume
     meta.json        {max_volume_id, bad_image_ids}
     glob_exist_ids.json
-                     read-only baseline of ids already covered elsewhere
-                     (seeded from deepghs/danbooru_newest-all); never written here
+                     read-only baseline of ids already covered by the upstream collections
+                     listed in ``_UPSTREAM_COLLECTIONS``; never written here
     README.md        statistics and preview
+
+This repository therefore holds a *difference*, not a corpus: only the posts the index knows
+about that no upstream collection already stores. Anyone wanting the complete set needs this
+repository together with every entry in ``_UPSTREAM_COLLECTIONS``, and the generated README
+says so explicitly so that a consumer who finds this repository on its own is not misled.
 
 Why a staging repo at all
 =========================
@@ -86,6 +91,7 @@ from hbutils.system import TemporaryDirectory, urlsplit
 from hfutils.cache import delete_detached_cache
 from hfutils.index import tar_create_index_for_directory
 from hfutils.operate import get_hf_client, get_hf_fs
+from hfutils.repository import hf_hub_repo_url
 from hfutils.utils import hf_normpath, number_to_tag
 from pyrate_limiter import Rate, Limiter, Duration
 from tqdm import tqdm
@@ -113,6 +119,49 @@ _SCAN_COLUMNS = ['id', 'file_url', 'mimetype', 'file_ext', 'file_size', 'image_w
 _TABLE_COLUMNS = ['id', 'filename', 'volume_file', 'file_size', 'mimetype', 'file_ext',
                   'width', 'height', 'rating', 'md5', 'file_url']
 
+#: The public Hugging Face endpoint. Safe to write down; the self-hosted one is a secret and
+#: must always come from ``HF_ENDPOINT`` instead of a literal.
+_PUBLIC_ENDPOINT = 'https://huggingface.co'
+
+#: Collections whose posts are excluded from this repository. ``glob_exist_ids.json`` is the
+#: union of their ids, so a candidate is downloaded here only when none of these already hold
+#: it. The entries are documentation rather than configuration: the baseline file is built once
+#: and shipped read-only, and editing this list does not retroactively change what was skipped.
+#:
+#: Each entry carries enough detail for a reader - human or agent - to actually fetch a file
+#: from that collection, because the three repositories do not share one access pattern. Two
+#: live on a self-hosted endpoint and carry hfutils sidecars; the third is on the public hub
+#: and carries none, so it needs a different retrieval path entirely.
+_UPSTREAM_COLLECTIONS = [
+    {
+        'repo_id': 'deepghs/danbooru_newest-all',
+        # None means "whatever HF_ENDPOINT points at". The self-hosted endpoint is a repository
+        # secret, so it is never written as a literal here; URLs are built with
+        # hf_hub_repo_url() at render time instead.
+        'endpoint': None,
+        'idx_repo_id': None,
+        'tar_path': '`images/{id % 1000:04d}.tar`',
+        'entry_name': '`{id}.{ext}`',
+        'note': '1000 fixed buckets of ~8 GB, keyed on `id % 1000`. Sidecars live beside the '
+                'tars as `images/{id % 1000:04d}.json`, so no separate index repository is '
+                'needed.',
+    },
+    {
+        'repo_id': 'nyanko7/danbooru2023',
+        'endpoint': _PUBLIC_ENDPOINT,
+        # The tars carry no sidecars of their own; deepghs publishes a mirror-shaped index
+        # repository whose json paths match the tar paths one for one, which is exactly the
+        # split-repository layout hfutils takes via idx_repo_id.
+        'idx_repo_id': 'deepghs/danbooru2023_index',
+        'tar_path': '`original/data-{id % 1000:04d}.tar` for the 2023 base, '
+                    '`recent/data-1{id % 1000:03d}.tar` for later additions, and dated '
+                    '`updates/<date>/dataset-*.tar` patches',
+        'entry_name': '`./{id}.{ext}` (note the `./` prefix, unlike the other two)',
+        'note': 'Posts up to id ~6,857,737 plus later patches. `exist_image_ids.json` in the '
+                'index repository lists every id it holds.',
+    },
+]
+
 
 def _volume_paths(volume_id: int):
     """
@@ -139,12 +188,13 @@ def _load_state(hf_client, repository: str, glob_exist_ids_file: str):
     :type repository: str
     :param glob_exist_ids_file: Name of the read-only baseline id list in the repository.
     :type glob_exist_ids_file: str
-    :returns: Tuple of (records, covered id set, bad id set, max volume id).
+    :returns: Tuple of (records, covered id set, bad id set, max volume id, baseline size).
     """
     records: List[dict] = []
     covered_ids = set()
     bad_image_ids = set()
     max_volume_id = 0
+    baseline_size = 0
 
     if hf_client.file_exists(repo_id=repository, repo_type='dataset', filename=glob_exist_ids_file):
         path = safe_hf_hub_download(hf_client, repo_id=repository, repo_type='dataset',
@@ -152,6 +202,7 @@ def _load_state(hf_client, repository: str, glob_exist_ids_file: str):
         with open(path, 'r') as f:
             baseline = json.load(f)
         covered_ids.update(baseline)
+        baseline_size = len(baseline)
         logging.info(f'Baseline {glob_exist_ids_file!r} loaded, {plural_word(len(baseline), "id")}.')
     else:
         logging.warning(f'No {glob_exist_ids_file!r} in {repository!r}, starting without a baseline.')
@@ -174,7 +225,7 @@ def _load_state(hf_client, repository: str, glob_exist_ids_file: str):
         logging.info(f'Meta loaded, max_volume_id={max_volume_id}, '
                      f'{plural_word(len(bad_image_ids), "bad id")}.')
 
-    return records, covered_ids, bad_image_ids, max_volume_id
+    return records, covered_ids, bad_image_ids, max_volume_id, baseline_size
 
 
 def _scan_candidates(src_repository: str, src_revision: str, covered_ids: set,
@@ -318,9 +369,15 @@ def _plan_volumes(candidates: List[dict], max_volume_files: int, max_volume_byte
 
 
 def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_volume_id: int,
-                  src_repository: str):
+                  src_repository: str, repository: str, baseline_size: int,
+                  glob_exist_ids_file: str):
     """
     Render the staging repository README.
+
+    The coverage section is not decoration. This repository stores a set difference, so a
+    consumer who takes it for a complete Danbooru mirror would silently lose every post the
+    upstream collections already hold - millions of them. The README states the exclusion, names
+    the collections, and spells out the union needed for a complete set.
 
     :param md_file: Destination path.
     :type md_file: str
@@ -332,6 +389,12 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
     :type max_volume_id: int
     :param src_repository: Upstream index dataset repository id.
     :type src_repository: str
+    :param repository: This staging repository's own id, used in the usage examples.
+    :type repository: str
+    :param baseline_size: Number of ids in the read-only exclusion baseline.
+    :type baseline_size: int
+    :param glob_exist_ids_file: Name of the baseline file inside this repository.
+    :type glob_exist_ids_file: str
     """
     total_bytes = int(df_table['file_size'].sum()) if len(df_table) else 0
     current_time = datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -360,13 +423,173 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
 
         print('# Danbooru Staging Download Dataset', file=f)
         print('', file=f)
-        print(f'Raw original files pulled for posts listed in [{src_repository}]'
-              f'(https://huggingface.co/datasets/{src_repository}). This repository is a staging '
-              f'area for the repack stage, not a finished dataset.', file=f)
+        # The index repository lives only on the self-hosted endpoint; linking it to
+        # huggingface.co would send every reader to a 404.
+        print(f'Raw original files for Danbooru posts listed in [{src_repository}]'
+              f'(https://hub.deepghs.org/datasets/{src_repository}) that **no existing upstream '
+              f'collection already stores**. This repository is a staging area for the repack '
+              f'stage, and it is deliberately incomplete on its own.', file=f)
         print('', file=f)
-        print('Images live in append-only hfutils-indexed tar volumes under `images/`, each with a '
-              'sibling `.json` sidecar holding per-entry offset, size and sha256. `table.parquet` '
-              'maps every stored post id to its `volume_file` and `filename`.', file=f)
+
+        print('# What is excluded, and what you need for a complete set', file=f)
+        print('', file=f)
+        print('Before anything is downloaded, every post id already covered by these collections '
+              'is removed from the candidate list:', file=f)
+        print('', file=f)
+        for entry in _UPSTREAM_COLLECTIONS:
+            url = hf_hub_repo_url(repo_id=entry['repo_id'], repo_type='dataset',
+                                  endpoint=entry['endpoint'])
+            print(f'- [`{entry["repo_id"]}`]({url})', file=f)
+        print('', file=f)
+        print(f'The union of their ids ships here as `{glob_exist_ids_file}` '
+              f'({baseline_size:,} ids). That file is read-only: this job reads it to decide what '
+              f'to skip and never adds to it. So what you find here is a set *difference* - only '
+              f'the posts the index knows about that none of the collections above already hold.',
+              file=f)
+        print('', file=f)
+        print('**This repository alone is not a complete Danbooru mirror.** Using it by itself '
+              'silently omits every post covered upstream. For the complete, up-to-date set of '
+              'originals you need all of the following together:', file=f)
+        print('', file=f)
+        print('```text', file=f)
+        print(repository, file=f)
+        for entry in _UPSTREAM_COLLECTIONS:
+            print(f'  + {entry["repo_id"]}', file=f)
+        print('```', file=f)
+        print('', file=f)
+        print('Post ids are globally unique and the three sets are disjoint by construction, so '
+              'the union can be taken directly - no deduplication step is needed.', file=f)
+        print('', file=f)
+
+        print('# How to fetch one post', file=f)
+        print('', file=f)
+        print('Every one of the three collections is an hfutils-indexed tar store, so a single '
+              'image is a range request rather than a whole-tar download. What differs is where '
+              'the index lives and how an entry is named:', file=f)
+        print('', file=f)
+        print('| collection | tar holding post `id` | index | entry name |', file=f)
+        print('|---|---|---|---|', file=f)
+        print(f'| `{repository}` (this one) | `volume_file` from `table.parquet` | '
+              f'beside the tars | `{"{id}.{ext}"}` |', file=f)
+        for entry in _UPSTREAM_COLLECTIONS:
+            idx = f'`{entry["idx_repo_id"]}`' if entry['idx_repo_id'] else 'beside the tars'
+            print(f'| `{entry["repo_id"]}` | {entry["tar_path"]} | {idx} | '
+                  f'{entry["entry_name"]} |', file=f)
+        print('', file=f)
+        for entry in _UPSTREAM_COLLECTIONS:
+            print(f'- `{entry["repo_id"]}`: {entry["note"]}', file=f)
+        print('', file=f)
+        print('`nyanko7/danbooru2023` publishes no sidecars of its own, but '
+              '`deepghs/danbooru2023_index` mirrors its tree exactly - `original/data-0000.json` '
+              'indexes `original/data-0000.tar`, and so on. hfutils reads a split pair like that '
+              'natively through `idx_repo_id`, so it needs no special handling.', file=f)
+        print('', file=f)
+        print('## Endpoints', file=f)
+        print('', file=f)
+        print(f'`nyanko7/danbooru2023` and `deepghs/danbooru2023_index` are public on '
+              f'{_PUBLIC_ENDPOINT}. This repository and `deepghs/danbooru_newest-all` are '
+              f'private and live on a self-hosted endpoint - set `HF_ENDPOINT` to it and '
+              f'`HF_TOKEN` to a token with access. Because two endpoints are in play in one '
+              f'script, pass `endpoint=` explicitly on the public calls rather than relying on '
+              f'the environment for both.', file=f)
+        print('', file=f)
+        print('## Resolution order', file=f)
+        print('', file=f)
+        print('```python', file=f)
+        print('import json, os', file=f)
+        print('import pandas as pd', file=f)
+        print('from huggingface_hub import hf_hub_download', file=f)
+        print('from hfutils.index import hf_tar_file_download, hf_tar_file_exists', file=f)
+        print('', file=f)
+        print(f'PUBLIC = "{_PUBLIC_ENDPOINT}"', file=f)
+        print('PRIVATE = os.environ["HF_ENDPOINT"]   # the self-hosted endpoint', file=f)
+        print('', file=f)
+        print('', file=f)
+        print('def fetch(post_id: int, dst: str) -> str:', file=f)
+        print('    """Download one original into dst; return which collection served it."""', file=f)
+        print('    bucket = post_id % 1000', file=f)
+        print('', file=f)
+        print('    # 1. this repository - table.parquet names the exact volume', file=f)
+        print('    table = pd.read_parquet(hf_hub_download(', file=f)
+        print(f'        repo_id="{repository}", repo_type="dataset",', file=f)
+        print('        filename="table.parquet", endpoint=PRIVATE))', file=f)
+        print('    hit = table[table["id"] == post_id]', file=f)
+        print('    if len(hit):', file=f)
+        print('        row = hit.iloc[0]', file=f)
+        print('        hf_tar_file_download(', file=f)
+        print(f'            repo_id="{repository}", repo_type="dataset",', file=f)
+        print('            archive_in_repo=row["volume_file"],', file=f)
+        print('            file_in_archive=row["filename"], local_file=dst)', file=f)
+        print('        return "staging"', file=f)
+        print('', file=f)
+        print('    # 2. danbooru_newest-all - fixed bucket, sidecar sits beside the tar', file=f)
+        print('    sidecar = hf_hub_download(', file=f)
+        print('        repo_id="deepghs/danbooru_newest-all", repo_type="dataset",', file=f)
+        print('        filename=f"images/{bucket:04d}.json", endpoint=PRIVATE)', file=f)
+        print('    for name in json.load(open(sidecar))["files"]:', file=f)
+        print('        if name.rsplit(".", 1)[0] == str(post_id):', file=f)
+        print('            hf_tar_file_download(', file=f)
+        print('                repo_id="deepghs/danbooru_newest-all", repo_type="dataset",', file=f)
+        print('                archive_in_repo=f"images/{bucket:04d}.tar",', file=f)
+        print('                file_in_archive=name, local_file=dst)', file=f)
+        print('            return "danbooru_newest-all"', file=f)
+        print('', file=f)
+        print('    # 3. danbooru2023 - tars in one repo, index in another', file=f)
+        print('    #    HF_ENDPOINT must point at the public hub for this block; hfutils', file=f)
+        print('    #    takes no per-call endpoint here, so set it around the call.', file=f)
+        print('    was, os.environ["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT"), PUBLIC', file=f)
+        print('    try:', file=f)
+        print('        pair = dict(repo_id="nyanko7/danbooru2023", repo_type="dataset",', file=f)
+        print('                    idx_repo_id="deepghs/danbooru2023_index",', file=f)
+        print('                    idx_repo_type="dataset")', file=f)
+        print('        for archive in (f"original/data-{bucket:04d}.tar",', file=f)
+        print('                        f"recent/data-1{bucket:03d}.tar"):', file=f)
+        print('            for ext in ("jpg", "png", "webp", "gif", "jpeg"):', file=f)
+        print('                name = f"./{post_id}.{ext}"      # note the ./ prefix', file=f)
+        print('                if hf_tar_file_exists(archive_in_repo=archive,', file=f)
+        print('                                      file_in_archive=name, **pair):', file=f)
+        print('                    hf_tar_file_download(archive_in_repo=archive,', file=f)
+        print('                                         file_in_archive=name,', file=f)
+        print('                                         local_file=dst, **pair)', file=f)
+        print('                    return "danbooru2023"', file=f)
+        print('    finally:', file=f)
+        print('        if was is None:', file=f)
+        print('            os.environ.pop("HF_ENDPOINT", None)', file=f)
+        print('        else:', file=f)
+        print('            os.environ["HF_ENDPOINT"] = was', file=f)
+        print('', file=f)
+        print('    raise KeyError(f"post {post_id} is in none of the three collections")', file=f)
+        print('```', file=f)
+        print('', file=f)
+        print('The extension loop in step 3 is only needed when you do not already know it. '
+              'Reading `exist_image_ids.json` once, or the index json for the bucket, gives you '
+              'the exact entry name and skips the probing.', file=f)
+        print('', file=f)
+
+        print('# Layout of this repository', file=f)
+        print('', file=f)
+        print('```text', file=f)
+        print('images/0/001.tar     hfutils-indexed tar volume', file=f)
+        print('images/0/001.json    sidecar: {filesize, hash, files: {name: {offset, size, sha256}}}', file=f)
+        print('images/0/002.tar', file=f)
+        print('...', file=f)
+        print('table.parquet        one row per stored image', file=f)
+        print('meta.json            {max_volume_id, bad_image_ids}', file=f)
+        print(f'{glob_exist_ids_file}  read-only exclusion baseline (see above)', file=f)
+        print('```', file=f)
+        print('', file=f)
+        print('Volumes are numbered from 1 and laid out as `images/{n // 1000}/{n % 1000:03d}.tar`. '
+              'They are append-only: an existing volume is never rewritten, so any tar and sidecar '
+              'you have already downloaded stays valid forever and only new volumes need fetching '
+              'on an update.', file=f)
+        print('', file=f)
+        print('`table.parquet` columns: ' +
+              ', '.join(f'`{c}`' for c in _TABLE_COLUMNS) + '. `volume_file` and `filename` are '
+              'the two you need to pull the bytes; `md5` and `file_size` come from the index and '
+              'were verified at download time.', file=f)
+        print('', file=f)
+        print('`meta.json` carries `bad_image_ids`: posts the index lists but the CDN answers 404 '
+              'or 410 for. They will never appear here and are not worth retrying.', file=f)
         print('', file=f)
 
         print('# Information', file=f)
@@ -468,7 +691,7 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
         logging.info(f'Staging repository {repository!r} created.')
 
-    records, covered_ids, bad_image_ids, max_volume_id = _load_state(
+    records, covered_ids, bad_image_ids, max_volume_id, baseline_size = _load_state(
         hf_client=hf_client, repository=repository, glob_exist_ids_file=glob_exist_ids_file)
     logging.info(f'{plural_word(len(covered_ids), "id")} already covered, '
                  f'current max volume id: {max_volume_id}.')
@@ -726,7 +949,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                 }, f)
             _write_readme(os.path.join(upload_dir, 'README.md'), df_table=df_table,
                           bad_image_ids=bad_image_ids, max_volume_id=max_volume_id,
-                          src_repository=src_repository)
+                          src_repository=src_repository, repository=repository,
+                          baseline_size=baseline_size,
+                          glob_exist_ids_file=glob_exist_ids_file)
 
             actual_bytes = os.path.getsize(tar_file)
             limiter.try_acquire('hf_upload')
