@@ -40,13 +40,18 @@ on:
         description: 'Route downloads through the Bright Data proxy pool (default off; the direct route is faster)'
         required: false
         default: 'false'
-  # Target cadence is every 8 hours, kept commented until the backlog has been worked down by
-  # hand. When it goes live it runs with the input defaults above, which are the direct-route
-  # configuration: 16 workers, no proxy, a limiter starting at 4 requests a second. The proxy
-  # route is roughly three times faster but trades a rate limit for a reputation one, so it stays
-  # an explicit choice rather than the unattended default.
-  #  schedule:
-  #    - cron: '17 */8 * * *'
+  # A scheduled trigger supplies no inputs, so every value above falls through to the `||`
+  # default in the env block below. Those defaults are the direct-route configuration on
+  # purpose: 16 workers, no proxy, a limiter starting at 4 requests a second. The proxy route is
+  # roughly three times faster but trades a rate limit for a reputation one, so it stays an
+  # explicit dispatch-time choice rather than the unattended default.
+  #
+  # Eight hours is far more often than the work requires. The initial backlog took seven manual
+  # runs; steady state is a few thousand new posts a day, which one run clears in minutes before
+  # exiting on an empty candidate list. The cadence buys prompt recovery from a failed run, not
+  # throughput.
+  schedule:
+    - cron: '17 */8 * * *'
 
 jobs:
   quick_dl:
