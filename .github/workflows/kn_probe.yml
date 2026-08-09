@@ -1,0 +1,76 @@
+#file: noinspection YAMLSchemaValidation
+name: Konachan Probe
+
+# Throwaway diagnostic. Konachan answers 403 from GitHub-hosted runners while the same requests
+# succeed from a workstation, so the cause cannot be reproduced locally and has to be measured
+# where it happens. This job reports the runner's egress address and tries each transport in
+# turn, which separates "this address is refused" from "this TLS fingerprint is refused".
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: Probe konachan from a runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests 'httpx[http2]' curl_cffi
+      - name: Probe
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import requests
+
+          UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+          TARGETS = {
+              'tag.json': 'https://konachan.com/tag.json',
+              'post.json': 'https://konachan.com/post.json?limit=1',
+          }
+
+          try:
+              print('egress ip:', requests.get('https://api.ipify.org', timeout=20).text)
+          except Exception as err:
+              print('egress ip: unknown -', err)
+          print()
+
+          def report(label, fn):
+              for name, url in TARGETS.items():
+                  try:
+                      status, size = fn(url)
+                      print(f'  {label:<28} {name:<10} -> HTTP {status}, {size} bytes')
+                  except Exception as err:
+                      print(f'  {label:<28} {name:<10} -> {type(err).__name__}: {str(err)[:70]}')
+
+          s = requests.Session()
+          s.headers['User-Agent'] = UA
+          report('requests (http/1.1)', lambda u: (lambda r: (r.status_code, len(r.content)))(s.get(u, timeout=30)))
+
+          try:
+              import httpx
+              with httpx.Client(http2=True, headers={'User-Agent': UA}, timeout=30) as c:
+                  report('httpx http2', lambda u: (lambda r: (r.status_code, len(r.content)))(c.get(u)))
+          except Exception as err:
+              print('  httpx http2 unavailable -', err)
+
+          # An impersonation target the installed build does not know raises rather than
+          # falling back, so unsupported names simply show up as errors in the table.
+          from curl_cffi import requests as creq
+          for imp in ('chrome110', 'chrome116', 'chrome120', 'chrome124', 'chrome131',
+                      'edge101', 'safari15_5', 'safari17_0', 'firefox133'):
+              def call(u, imp=imp):
+                  r = creq.get(u, impersonate=imp, timeout=30)
+                  return r.status_code, len(r.content)
+              report(f'curl_cffi {imp}', call)
+          PY
