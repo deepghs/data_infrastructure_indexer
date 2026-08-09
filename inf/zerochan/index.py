@@ -76,8 +76,9 @@ def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
 
 
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
-         tag_refresh_time: float = 15 * 24 * 60 * 60, deploy_span: float = 5 * 60, sync_mode: bool = False,
-         try_failed_ids_first: bool = False, start_from_id: Optional[int] = None):
+         tag_refresh_time: float = 365 * 24 * 60 * 60, deploy_span: float = 5 * 60, sync_mode: bool = False,
+         try_failed_ids_first: bool = False, start_from_id: Optional[int] = None,
+         max_tag_refresh: int = 300):
     """Sync Zerochan post metadata and tag state into the target Hugging Face dataset repository."""
     start_time = time.time()
     hf_client = get_hf_client()
@@ -132,14 +133,30 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     else:
         min_id = None
 
+    # Refreshing a stale tag costs a serial request against a rate-limited site, and the cache
+    # is old enough that every tag looks stale: of 564,908 cached tags the median age is 830
+    # days. Under the previous 15-day window that meant re-fetching essentially all of them,
+    # which is why one run managed 35 posts in 22 minutes while spending 306 requests on 305
+    # distinct tags. Tag metadata - category, aliases, description - changes on a scale of
+    # years, so a stale entry is still a good answer. Refresh a bounded number per run and
+    # serve the rest from cache; over successive runs the whole cache still turns over, but no
+    # single run is held hostage to it. A tag with no cached entry at all is always fetched:
+    # there is nothing to fall back on.
+    tag_refreshes = [0]
+
     def ping_tag(tag, primary: bool = False):
-        if tag in d_tags and d_tags[tag]['created_at'] + tag_refresh_time > time.time():
+        cached = d_tags.get(tag)
+        fresh = cached is not None and cached['created_at'] + tag_refresh_time > time.time()
+        budget_spent = tag_refreshes[0] >= max_tag_refresh
+        if cached is not None and (fresh or budget_spent):
             if primary:
                 d_tags[tag]['strict'] += 1
             else:
                 d_tags[tag]['count'] += 1
             return tag
         else:
+            if cached is not None:
+                tag_refreshes[0] += 1
             logging.info(f'Query for tag {tag!r}.')
             tag_info = _get_tag_info(tag)
             if not tag_info:
@@ -398,9 +415,19 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
 @click.option(
     '-t', '--tag-refresh-time',
     type=duration_type(),
-    default=15 * 24 * 60 * 60,
+    default=365 * 24 * 60 * 60,
     show_default=True,
-    help='Refresh cached tag metadata when older than this threshold.',
+    help='Refresh cached tag metadata when older than this threshold. Tag metadata changes on '
+         'a scale of years, and every refresh is a serial request against a rate-limited site.',
+)
+@click.option(
+    '-T', '--max-tag-refresh',
+    type=int,
+    default=300,
+    show_default=True,
+    help='Refresh at most this many already-cached tags per run. Tags with no cached entry are '
+         'always fetched; this only bounds re-fetching stale ones, so a cold cache cannot '
+         'starve the post backlog.',
 )
 @click.option(
     '-d', '--deploy-span',
@@ -428,6 +455,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     help='Start scanning from this explicit record ID instead of the stored pointer.',
 )
 def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, tag_refresh_time: float,
+        max_tag_refresh: int,
         deploy_span: float, sync_mode: bool, try_failed_ids_first: bool, start_from_id: Optional[int]):
     logging.try_init_root(logging.INFO)
     return sync(
@@ -435,6 +463,7 @@ def cli(repository: str, max_time_limit: Optional[float], upload_time_span: floa
         max_time_limit=max_time_limit,
         upload_time_span=upload_time_span,
         tag_refresh_time=tag_refresh_time,
+        max_tag_refresh=max_tag_refresh,
         deploy_span=deploy_span,
         sync_mode=sync_mode,
         try_failed_ids_first=try_failed_ids_first,
