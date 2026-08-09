@@ -299,6 +299,33 @@ def _scan_candidates(src_repository: str, src_revision: str, covered_ids: set,
 _PERMANENT_STATUS = (404, 410)
 
 
+class UndecodableImage(Exception):
+    """
+    Raised when a download that passed every integrity check still cannot be decoded.
+
+    ``download_file`` verifies length and md5 before returning, so reaching the decode step
+    means the bytes on disk are exactly what the index says they should be. If the decoder then
+    refuses them, the fault is in the stored file rather than in the transfer, and no number of
+    retries can help: every attempt fetches the same verified bytes and fails identically.
+
+    Observed on Danbooru as PNGs whose ancillary chunks (``pHYs``, ``iCCP``, ``eXIf``) carry a
+    bad CRC. The image data itself is intact - browsers render them and the index records
+    correct dimensions - but strict chunk validation rejects the file, so it cannot be stored.
+    Eighteen such posts were re-downloaded on two consecutive runs, all eighteen matching md5
+    and all eighteen failing to decode, which is what motivated treating them as permanent.
+
+    Contrast with ``DownloadDigestMismatch``: there the bytes are *not* what they should be, so
+    the transfer is at fault and a retry is exactly right.
+    """
+
+    def __init__(self, post_id: int, url: str, reason: Exception):
+        Exception.__init__(self, f'Post {post_id} downloaded intact from {url!r} but could not '
+                                 f'be decoded: {reason!r}')
+        self.post_id = post_id
+        self.url = url
+        self.reason = reason
+
+
 def _classify_error(err: Exception) -> str:
     """
     Decide how a failed download should be handled.
@@ -309,12 +336,20 @@ def _classify_error(err: Exception) -> str:
     whole fleet down; swapping sessions there achieves nothing and retrying quickly makes it
     worse. Every rejection observed on CI has been a 429.
 
+    The second distinction is between a corrupt transfer and a corrupt file. A size or digest
+    mismatch means the bytes arrived wrong, which is worth retrying and falls through to
+    ``'transient'``. ``UndecodableImage`` means the bytes arrived right and are still unusable,
+    which is not.
+
     :param err: Exception raised while fetching or validating a post.
     :type err: Exception
-    :returns: ``'permanent'`` when the post is gone upstream, ``'blocked'`` when the fingerprint
-        was refused, ``'rate_limit'`` when the site is metering us, ``'transient'`` otherwise.
+    :returns: ``'permanent'`` when the post is gone upstream or its file is unusable,
+        ``'blocked'`` when the fingerprint was refused, ``'rate_limit'`` when the site is
+        metering us, ``'transient'`` otherwise.
     :rtype: str
     """
+    if isinstance(err, UndecodableImage):
+        return 'permanent'
     status = getattr(getattr(err, 'response', None), 'status_code', None)
     if status in _PERMANENT_STATUS:
         return 'permanent'
@@ -830,7 +865,8 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             lock = Lock()
             # One counter per outcome. Successes are counted and never logged: a per-item
             # success line adds nothing and drowns the lines that do need attention.
-            stats = {'ok': 0, 'gone': 0, 'failed': 0, 'retry': 0, 'deferred': 0}
+            stats = {'ok': 0, 'gone': 0, 'unusable': 0, 'failed': 0, 'retry': 0,
+                     'deferred': 0}
 
             with tarfile.open(tar_file, 'w:') as tar:
                 def _handle(err, item, attempt) -> float:
@@ -840,11 +876,19 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                         rate_limiter.report_throttled()
                     status = getattr(getattr(err, 'response', None), 'status_code', None)
                     if kind == 'permanent':
-                        # Genuinely gone upstream: record it so later runs skip it.
+                        # Nothing a later run could do differently, so record the id and let
+                        # every future run skip it. Two causes, worth telling apart in the log.
                         with lock:
                             volume_bad.append(item['id'])
-                            stats['gone'] += 1
-                        logging.warning(f'GONE post {item["id"]}: HTTP {status}.')
+                            if isinstance(err, UndecodableImage):
+                                stats['unusable'] += 1
+                            else:
+                                stats['gone'] += 1
+                        if isinstance(err, UndecodableImage):
+                            logging.warning(f'UNUSABLE post {item["id"]}: bytes match the index '
+                                            f'but will not decode - {err.reason!r}')
+                        else:
+                            logging.warning(f'GONE post {item["id"]}: HTTP {status}.')
                         raise err
                     if attempt >= cf_retries:
                         with lock:
@@ -886,10 +930,16 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
                                                          session=session,
                                                          expected_size=item['file_size'],
                                                          expected_md5=item['md5'])
-                                    # Size and md5 already rule out a truncated or substituted
-                                    # body; this only rejects formats PIL cannot open.
-                                    with Image.open(dst_file) as image:
-                                        width, height = image.size
+                                    # Size and md5 have already ruled out a truncated or
+                                    # substituted body, so a decode failure here is the stored
+                                    # file's own fault. Re-raise it as something the classifier
+                                    # can tell apart from a bad transfer.
+                                    try:
+                                        with Image.open(dst_file) as image:
+                                            width, height = image.size
+                                    except Exception as decode_err:
+                                        raise UndecodableImage(item['id'], item['file_url'],
+                                                               decode_err) from decode_err
                                 except Exception as err:
                                     failure = err
                                     # Only a refused fingerprint is the session's fault. Swapping
@@ -963,8 +1013,9 @@ def sync(repository: str, src_repository: str, src_revision: str = 'main',
             logging.info(f'Rate limiter settled at {rate_limiter.rate:.1f} req/s after '
                          f'{rate_limiter.throttles} throttling responses.')
             logging.info(f'Volume #{max_volume_id} downloaded: {stats["ok"]} ok, '
-                         f'{stats["gone"]} gone, {stats["failed"]} failed, '
-                         f'{stats["deferred"]} deferred, {stats["retry"]} retries, '
+                         f'{stats["gone"]} gone, {stats["unusable"]} unusable, '
+                         f'{stats["failed"]} failed, {stats["deferred"]} deferred, '
+                         f'{stats["retry"]} retries, '
                          f'{volume_bytes[0] / 1024 ** 3:.2f} GB.')
             pool_stats = pool.stats()
             logging.info(f'Sessions: {pool_stats["reuse_rate"]:.0%} slot reuse, '
