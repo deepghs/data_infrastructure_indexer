@@ -11,6 +11,10 @@ jobs:
   unittest:
     name: Code Test Newest
     runs-on: ${{ matrix.os }}
+    # GitHub hard-kills a job at 360 minutes. The run stops fetching at --max-time-limit (5h)
+    # and then still has to upload the whole parquet, which measured 16 minutes at 723 MB, so
+    # leave clear room for that rather than racing the ceiling.
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:

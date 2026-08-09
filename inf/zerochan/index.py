@@ -76,7 +76,7 @@ def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
 
 
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
-         tag_refresh_time: float = 365 * 24 * 60 * 60, deploy_span: float = 5 * 60, sync_mode: bool = False,
+         tag_refresh_time: float = 365 * 24 * 60 * 60, deploy_span: float = 45 * 60, sync_mode: bool = False,
          try_failed_ids_first: bool = False, start_from_id: Optional[int] = None,
          max_tag_refresh: int = 300):
     """Sync Zerochan post metadata and tag state into the target Hugging Face dataset repository."""
@@ -401,7 +401,9 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
 @click.option(
     '-m', '--max-time-limit',
     type=duration_type(allow_none=True),
-    default=5.7 * 60 * 60,
+    # The final deploy happens after this deadline and takes as long as a full parquet upload
+    # (16 minutes when measured). 5.7h left only two minutes before the job's own 6h ceiling.
+    default=5 * 60 * 60,
     show_default=True,
     help='Stop the sync after this total runtime. Use none or unlimited to disable the limit.',
 )
@@ -432,9 +434,11 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
 @click.option(
     '-d', '--deploy-span',
     type=duration_type(),
-    default=5 * 60,
+    default=45 * 60,
     show_default=True,
-    help='Minimum interval between deploy or upload commits.',
+    help='Minimum interval between deploy or upload commits. Every deploy re-uploads the whole '
+         'parquet, which measured 16 minutes at 723 MB, so a short interval spends most of the '
+         'run re-sending the same file rather than fetching posts.',
 )
 @click.option(
     '-s', '--sync-mode/--no-sync-mode',
