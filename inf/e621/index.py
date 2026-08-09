@@ -57,9 +57,16 @@ def _parquet_safe(v):
         return v
 
 
+#: Rows per posts.json call. e621 caps this at 320 and answers 410 with
+#: ``"Limit must be between 0 and 320."`` for anything larger. This used to be 1000, which the
+#: API once accepted; once it stopped, the very first call raised and the 410 fell through the
+#: session loop's 403-only branch, taking down every run from 2026-04-15 onward.
+POSTS_PER_PAGE = 320
+
+
 def _get_posts(session: Optional[requests.Session] = None,
                before_id: Optional[int] = None, after_id: Optional[int] = None,
-               limit: int = 1000) -> List[dict]:
+               limit: int = POSTS_PER_PAGE) -> List[dict]:
     session = session or get_requests_session()
     params = {'limit': str(limit)}
     if before_id is not None:
