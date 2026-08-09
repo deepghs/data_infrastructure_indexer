@@ -18,14 +18,19 @@ Layout published to the staging repository
     table.parquet    one row per image actually written into a volume
     meta.json        {max_volume_id, bad_image_ids}
     glob_exist_ids.json
-                     read-only baseline of ids already covered by the upstream collections
-                     listed in ``_UPSTREAM_COLLECTIONS``; never written here
-    README.md        statistics and preview
+                     read-only baseline of ids already covered by
+                     ``_EXCLUDED_COLLECTION``; never written here
+    README.md        statistics, coverage and usage
 
-This repository therefore holds a *difference*, not a corpus: only the posts the index knows
-about that no upstream collection already stores. Anyone wanting the complete set needs this
-repository together with every entry in ``_UPSTREAM_COLLECTIONS``, and the generated README
-says so explicitly so that a consumer who finds this repository on its own is not misled.
+This repository therefore holds a *difference*, not a corpus: the posts the index knows about
+that ``deepghs/danbooru_newest-all`` does not already store. The two together are complete
+through the newest id here, and the generated README says so explicitly so that a consumer who
+finds this repository on its own is not misled into treating it as a full mirror.
+
+``nyanko7/danbooru2023`` (``_COMPLEMENTARY_COLLECTION``) is deliberately *not* part of that
+exclusion. It was measured against the baseline rather than assumed: of its 7,199,355 posts
+only 213,226 are covered, so it contributes nearly seven million older posts the other two
+lack. The README lists it for that reason, not as something already accounted for.
 
 Why a staging repo at all
 =========================
@@ -123,44 +128,59 @@ _TABLE_COLUMNS = ['id', 'filename', 'volume_file', 'file_size', 'mimetype', 'fil
 #: must always come from ``HF_ENDPOINT`` instead of a literal.
 _PUBLIC_ENDPOINT = 'https://huggingface.co'
 
-#: Collections whose posts are excluded from this repository. ``glob_exist_ids.json`` is the
-#: union of their ids, so a candidate is downloaded here only when none of these already hold
-#: it. The entries are documentation rather than configuration: the baseline file is built once
-#: and shipped read-only, and editing this list does not retroactively change what was skipped.
+#: The one collection this repository is a complement to. ``glob_exist_ids.json`` is exactly
+#: its id set plus its 42 ``bad_image_ids``, so a candidate is downloaded here only when
+#: ``danbooru_newest-all`` does not already hold it. Measured: baseline 4,155,674 = the
+#: collection's 4,155,632 ids + 42 bad ids, with nothing else in it.
 #:
-#: Each entry carries enough detail for a reader - human or agent - to actually fetch a file
-#: from that collection, because the three repositories do not share one access pattern. Two
-#: live on a self-hosted endpoint and carry hfutils sidecars; the third is on the public hub
-#: and carries none, so it needs a different retrieval path entirely.
-_UPSTREAM_COLLECTIONS = [
-    {
-        'repo_id': 'deepghs/danbooru_newest-all',
-        # None means "whatever HF_ENDPOINT points at". The self-hosted endpoint is a repository
-        # secret, so it is never written as a literal here; URLs are built with
-        # hf_hub_repo_url() at render time instead.
-        'endpoint': None,
-        'idx_repo_id': None,
-        'tar_path': '`images/{id % 1000:04d}.tar`',
-        'entry_name': '`{id}.{ext}`',
-        'note': '1000 fixed buckets of ~8 GB, keyed on `id % 1000`. Sidecars live beside the '
-                'tars as `images/{id % 1000:04d}.json`, so no separate index repository is '
-                'needed.',
-    },
-    {
-        'repo_id': 'nyanko7/danbooru2023',
-        'endpoint': _PUBLIC_ENDPOINT,
-        # The tars carry no sidecars of their own; deepghs publishes a mirror-shaped index
-        # repository whose json paths match the tar paths one for one, which is exactly the
-        # split-repository layout hfutils takes via idx_repo_id.
-        'idx_repo_id': 'deepghs/danbooru2023_index',
-        'tar_path': '`original/data-{id % 1000:04d}.tar` for the 2023 base, '
-                    '`recent/data-1{id % 1000:03d}.tar` for later additions, and dated '
-                    '`updates/<date>/dataset-*.tar` patches',
-        'entry_name': '`./{id}.{ext}` (note the `./` prefix, unlike the other two)',
-        'note': 'Posts up to id ~6,857,737 plus later patches. `exist_image_ids.json` in the '
-                'index repository lists every id it holds.',
-    },
-]
+#: This entry is documentation rather than configuration - the baseline file is built once and
+#: shipped read-only, so editing this does not retroactively change what was skipped.
+_EXCLUDED_COLLECTION = {
+    'repo_id': 'deepghs/danbooru_newest-all',
+    # None means "whatever HF_ENDPOINT points at". The self-hosted endpoint is a repository
+    # secret, so it is never written as a literal here; URLs are built with hf_hub_repo_url()
+    # at render time instead.
+    'endpoint': None,
+    'idx_repo_id': None,
+    'tar_path': '`images/{id % 1000:04d}.tar`',
+    'entry_name': '`{id}.{ext}`',
+    'note': '1000 fixed buckets of ~8 GB, keyed on `id % 1000`. Sidecars live beside the tars '
+            'as `images/{id % 1000:04d}.json`, so no separate index repository is needed.',
+}
+
+#: A collection that is *not* excluded and does not overlap this one, listed because leaving it
+#: out is the likelier mistake. ``danbooru2023`` holds 7,199,355 posts up to id 7,349,999, of
+#: which only 213,226 are in the baseline - it covers the old id range that
+#: ``danbooru_newest-all`` is sparse in, and contributes 6,986,129 posts neither of the other
+#: two has. Its zero overlap with this repository is incidental, not by design: every id here
+#: is above 11,193,166, well past where ``danbooru2023`` stops.
+_COMPLEMENTARY_COLLECTION = {
+    'repo_id': 'nyanko7/danbooru2023',
+    'endpoint': _PUBLIC_ENDPOINT,
+    # The tars carry no sidecars of their own; deepghs publishes a mirror-shaped index
+    # repository whose json paths match the tar paths one for one, which is exactly the
+    # split-repository layout hfutils takes via idx_repo_id.
+    'idx_repo_id': 'deepghs/danbooru2023_index',
+    'tar_path': '`original/data-{id % 1000:04d}.tar` for the 2023 base, '
+                '`recent/data-1{id % 1000:03d}.tar` for later additions, and dated '
+                '`updates/<date>/dataset-*.tar` patches',
+    'entry_name': '`./{id}.{ext}` (note the `./` prefix, unlike the other two)',
+    'note': 'Posts up to id 7,349,999. `exist_image_ids.json` in the index repository lists '
+            'every id it holds.',
+}
+
+#: Every collection a reader may want to fetch from, in resolution order.
+_ALL_COLLECTIONS = [_EXCLUDED_COLLECTION, _COMPLEMENTARY_COLLECTION]
+
+#: Sizes measured on 2026-08-09, quoted in the README so the relationship between the
+#: collections is concrete. They drift as the collections grow; the *relationship* does not.
+_MEASURED = {
+    'date': '2026-08-09',
+    'newest_all': 4155632,
+    'danbooru2023': 7199355,
+    'overlap_all_2023': 213226,
+    'only_2023': 6986129,
+}
 
 
 def _volume_paths(volume_id: int):
@@ -431,39 +451,76 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
               f'stage, and it is deliberately incomplete on its own.', file=f)
         print('', file=f)
 
-        print('# What is excluded, and what you need for a complete set', file=f)
+        print('# Coverage: what is here, what is not', file=f)
         print('', file=f)
-        print('Before anything is downloaded, every post id already covered by these collections '
-              'is removed from the candidate list:', file=f)
+        exc_url = hf_hub_repo_url(repo_id=_EXCLUDED_COLLECTION['repo_id'], repo_type='dataset',
+                                  endpoint=_EXCLUDED_COLLECTION['endpoint'])
+        print(f'This repository is the **complement of one collection**, '
+              f'[`{_EXCLUDED_COLLECTION["repo_id"]}`]({exc_url}). Before anything is downloaded, '
+              f'every id that collection already holds is removed from the candidate list, so '
+              f'what lands here is strictly what it is missing.', file=f)
         print('', file=f)
-        for entry in _UPSTREAM_COLLECTIONS:
-            url = hf_hub_repo_url(repo_id=entry['repo_id'], repo_type='dataset',
-                                  endpoint=entry['endpoint'])
-            print(f'- [`{entry["repo_id"]}`]({url})', file=f)
+        print(f'The exclusion set ships here as `{glob_exist_ids_file}` ({baseline_size:,} ids): '
+              f'that collection\'s ids plus its handful of permanently-unavailable ones, and '
+              f'nothing else. It is read-only - this job reads it to decide what to skip and '
+              f'never adds to it.', file=f)
         print('', file=f)
-        print(f'The union of their ids ships here as `{glob_exist_ids_file}` '
-              f'({baseline_size:,} ids). That file is read-only: this job reads it to decide what '
-              f'to skip and never adds to it. So what you find here is a set *difference* - only '
-              f'the posts the index knows about that none of the collections above already hold.',
-              file=f)
-        print('', file=f)
-        print('**This repository alone is not a complete Danbooru mirror.** Using it by itself '
-              'silently omits every post covered upstream. For the complete, up-to-date set of '
-              'originals you need all of the following together:', file=f)
+        print('So for the complete, up-to-date set of recent Danbooru originals:', file=f)
         print('', file=f)
         print('```text', file=f)
-        print(repository, file=f)
-        for entry in _UPSTREAM_COLLECTIONS:
-            print(f'  + {entry["repo_id"]}', file=f)
+        # The baseline is that collection's ids plus *its* bad ids, a different set from this
+        # repository's own bad_image_ids - subtracting the wrong one gives a number that is
+        # quietly off by dozens.
+        excluded_posts = _MEASURED['newest_all']
+        print(f'{_EXCLUDED_COLLECTION["repo_id"]}   ({excluded_posts:,} posts, '
+              f'ids up to ~11.19M)', file=f)
+        print(f'  + {repository}   ({len(df_table):,} posts, everything after that)', file=f)
+        print(f'  = {excluded_posts + len(df_table):,} posts, complete through the newest id '
+              f'in `table.parquet`', file=f)
         print('```', file=f)
         print('', file=f)
-        print('Post ids are globally unique and the three sets are disjoint by construction, so '
-              'the union can be taken directly - no deduplication step is needed.', file=f)
+        print('The two are disjoint and neither is redundant. Taking only this repository leaves '
+              'you with the recent tail and nothing before it.', file=f)
+        print('', file=f)
+
+        print('## Older posts: a third collection you probably also want', file=f)
+        print('', file=f)
+        cmp_url = hf_hub_repo_url(repo_id=_COMPLEMENTARY_COLLECTION['repo_id'],
+                                  repo_type='dataset',
+                                  endpoint=_COMPLEMENTARY_COLLECTION['endpoint'])
+        print(f'[`{_COMPLEMENTARY_COLLECTION["repo_id"]}`]({cmp_url}) is **not** part of the '
+              f'exclusion above and is **not** made redundant by it. Measured on '
+              f'{_MEASURED["date"]}:', file=f)
+        print('', file=f)
+        print('| | posts |', file=f)
+        print('|---|---|', file=f)
+        print(f'| `{_COMPLEMENTARY_COLLECTION["repo_id"]}` total | '
+              f'{_MEASURED["danbooru2023"]:,} |', file=f)
+        print(f'| ... also in `{_EXCLUDED_COLLECTION["repo_id"]}` | '
+              f'{_MEASURED["overlap_all_2023"]:,} |', file=f)
+        print(f'| ... **found nowhere else** | **{_MEASURED["only_2023"]:,}** |', file=f)
+        print('', file=f)
+        print(f'It covers the old id range (up to 7,349,999) that '
+              f'`{_EXCLUDED_COLLECTION["repo_id"]}` is sparse in, and contributes nearly seven '
+              f'million posts neither of the other two has. Its zero overlap with *this* '
+              f'repository is incidental rather than designed: every id stored here is above '
+              f'11,193,166, far past where it stops.', file=f)
+        print('', file=f)
+        print('If you want Danbooru as far back as it goes, use all three:', file=f)
+        print('', file=f)
+        print('```text', file=f)
+        print(f'{_EXCLUDED_COLLECTION["repo_id"]}   +   {repository}   +   '
+              f'{_COMPLEMENTARY_COLLECTION["repo_id"]}', file=f)
+        print('```', file=f)
+        print('', file=f)
+        print('Post ids are globally unique, so a union needs no deduplication - but the first '
+              'two overlap the third slightly, so deduplicate by id if you merge all three.',
+              file=f)
         print('', file=f)
 
         print('# How to fetch one post', file=f)
         print('', file=f)
-        print('Every one of the three collections is an hfutils-indexed tar store, so a single '
+        print('All three collections named above are hfutils-indexed tar stores, so a single '
               'image is a range request rather than a whole-tar download. What differs is where '
               'the index lives and how an entry is named:', file=f)
         print('', file=f)
@@ -471,12 +528,12 @@ def _write_readme(md_file: str, df_table: pd.DataFrame, bad_image_ids: set, max_
         print('|---|---|---|---|', file=f)
         print(f'| `{repository}` (this one) | `volume_file` from `table.parquet` | '
               f'beside the tars | `{"{id}.{ext}"}` |', file=f)
-        for entry in _UPSTREAM_COLLECTIONS:
+        for entry in _ALL_COLLECTIONS:
             idx = f'`{entry["idx_repo_id"]}`' if entry['idx_repo_id'] else 'beside the tars'
             print(f'| `{entry["repo_id"]}` | {entry["tar_path"]} | {idx} | '
                   f'{entry["entry_name"]} |', file=f)
         print('', file=f)
-        for entry in _UPSTREAM_COLLECTIONS:
+        for entry in _ALL_COLLECTIONS:
             print(f'- `{entry["repo_id"]}`: {entry["note"]}', file=f)
         print('', file=f)
         print('`nyanko7/danbooru2023` publishes no sidecars of its own, but '
