@@ -25,6 +25,12 @@ try:
 except ImportError:  # pragma: no cover - curl_cffi is an optional transport
     pass
 
+#: Public alias for callers that need to catch a request failure from either transport. Use
+#: this rather than ``requests.RequestException`` anywhere a curl_cffi session might be passed
+#: in, and read the status with ``getattr(getattr(err, 'response', None), 'status_code', None)``
+#: - a connection-level failure carries no response at all.
+REQUEST_ERRORS: tuple = _RETRYABLE_REQUEST_ERRORS
+
 
 class TimeoutHTTPAdapter(HTTPAdapter):
     """

@@ -2,14 +2,12 @@ import re
 from urllib.parse import quote_plus, urljoin, unquote_plus
 
 import click
-import httpx
-import requests.exceptions
 from ditk import logging
 from hbutils.system import urlsplit
 from markdownify import MarkdownConverter, chomp
 from pyquery import PyQuery as pq
 
-from inf.utils.session import srequest
+from inf.utils.session import REQUEST_ERRORS, srequest
 from .base import _ROOT, get_session
 
 
@@ -56,8 +54,11 @@ def _get_tag_info(tag, session=None):
     session = session or get_session()
     try:
         resp = srequest(session, 'GET', f'{_ROOT}/{quote_plus(tag)}')
-    except (httpx.HTTPError, requests.exceptions.RequestException) as err:
-        if err.response.status_code in {410, 404, 500}:
+    except REQUEST_ERRORS as err:
+        # A connection-level failure carries no response at all, so reading .status_code
+        # directly turns a network blip into an AttributeError several frames from its cause.
+        status = getattr(getattr(err, 'response', None), 'status_code', None)
+        if status in {410, 404, 500}:
             return None
         raise
     if not resp.text or not resp.text.strip():

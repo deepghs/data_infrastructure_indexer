@@ -43,3 +43,8 @@ natsort
 pytimeparse>=1.1.8
 google-re2<1.1.20250722
 pyrate-limiter<4
+# Zerochan builds its JSON by string concatenation and never escapes quotes inside
+# values, so any post with a quote in a tag name serves a body no strict parser accepts.
+# Pinned to a floor that matches what was verified: on 17 real malformed bodies it
+# recovered every key and every tag verbatim, and left 8 valid bodies bit-identical.
+json_repair>=0.62

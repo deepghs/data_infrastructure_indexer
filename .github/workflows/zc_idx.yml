@@ -17,7 +17,10 @@ jobs:
         os:
           - 'ubuntu-latest'
         python-version:
-          - '3.8'
+          # json_repair requires >=3.10, and zerochan's malformed JSON cannot be parsed
+          # without it. On 3.8 pip would silently resolve to an ancient release whose repair
+          # behaviour is not what was verified here.
+          - '3.11'
 
     steps:
       - name: Get system version for Linux
