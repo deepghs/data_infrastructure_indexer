@@ -12,6 +12,19 @@ from requests.exceptions import RequestException, TooManyRedirects
 
 DEFAULT_TIMEOUT = 60  # seconds
 
+#: Network errors worth retrying. ``curl_cffi`` sessions are drop-in for ``requests`` at the
+#: call site but not in their exception hierarchy: its error class is *also* named
+#: ``RequestException`` yet descends from ``OSError``, so a bare ``requests.RequestException``
+#: clause silently lets every curl_cffi network fault escape unretried. Imported softly so
+#: nothing here depends on curl_cffi being installed.
+_RETRYABLE_REQUEST_ERRORS: tuple = (RequestException,)
+try:
+    from curl_cffi.requests.errors import RequestsError as _CffiRequestsError
+
+    _RETRYABLE_REQUEST_ERRORS = (RequestException, _CffiRequestsError)
+except ImportError:  # pragma: no cover - curl_cffi is an optional transport
+    pass
+
 
 class TimeoutHTTPAdapter(HTTPAdapter):
     """
@@ -132,7 +145,7 @@ def srequest(session: Union[requests.Session, List[requests.Session]], method, u
             resp = _session.request(method, url, **kwargs)
         except TooManyRedirects:
             raise
-        except RequestException as err:
+        except _RETRYABLE_REQUEST_ERRORS as err:
             logging.warning(
                 f'Request error ({attempt + 1}/{max_retries}) for {method} {url!r} - {err!r}, '
                 f'sleep for {current_sleep_time:.1f}s.'

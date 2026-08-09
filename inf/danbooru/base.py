@@ -34,13 +34,13 @@ pretend that is the main lever:
 """
 import random
 import threading
-import typing
 from typing import Dict, List, Optional, Tuple
 
 from curl_cffi import requests as cffi_requests
 from ditk import logging
 
 from inf.utils.brightdata import with_session
+from inf.utils.impersonate import build_ladder
 
 __site_url__ = 'https://danbooru.donmai.us'
 
@@ -56,55 +56,8 @@ PREFERRED_IMPERSONATES: List[str] = [
 ]
 
 
-def _supported_impersonates() -> Optional[set]:
-    """
-    Ask the installed ``curl_cffi`` which impersonation targets it actually has.
-
-    The available set is a property of the installed build, and the build is a property of the
-    interpreter: Python 3.8 caps ``curl_cffi`` at 0.9.0, which knows 29 targets, while 0.16.0
-    knows 53. Naming a target the local build has never heard of raises ``ImpersonateError`` at
-    session construction, which looks like a network fault to everything downstream.
-
-    :returns: Supported target names, or None when the build cannot be interrogated.
-    :rtype: Optional[set]
-    """
-    try:
-        from curl_cffi.requests.impersonate import BrowserTypeLiteral
-        return set(typing.get_args(BrowserTypeLiteral))
-    except Exception:
-        pass
-    try:
-        from curl_cffi.requests import BrowserType
-        return {entry.value for entry in BrowserType}
-    except Exception:
-        return None
-
-
-def _build_ladder() -> List[str]:
-    """
-    Narrow :data:`PREFERRED_IMPERSONATES` to what this build supports.
-
-    :returns: Usable fingerprint names.
-    :rtype: List[str]
-    """
-    supported = _supported_impersonates()
-    if not supported:
-        return list(PREFERRED_IMPERSONATES)
-    usable = [imp for imp in PREFERRED_IMPERSONATES if imp in supported]
-    dropped = [imp for imp in PREFERRED_IMPERSONATES if imp not in supported]
-    if dropped:
-        logging.info(f'Impersonation targets unavailable in this curl_cffi build, dropped: '
-                     f'{", ".join(dropped)}.')
-    if not usable:
-        # Nothing preferred is available. Rather than fail, take what the build does have.
-        usable = sorted(supported - {'chrome', 'edge', 'firefox', 'safari'})
-        logging.warning(f'No preferred impersonation target is available; '
-                        f'falling back to {len(usable)} build-provided targets.')
-    return usable
-
-
 #: Fingerprints actually usable here, resolved once against the installed build.
-IMPERSONATE_LADDER: List[str] = _build_ladder()
+IMPERSONATE_LADDER: List[str] = build_ladder(PREFERRED_IMPERSONATES, site='danbooru')
 
 #: Weight of the newest outcome when updating a fingerprint's score. High enough that a target
 #: which stops working is demoted within a handful of draws.

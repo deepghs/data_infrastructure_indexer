@@ -6,10 +6,8 @@ import time
 from typing import Optional
 
 import click
-import httpx
 import numpy as np
 import pandas as pd
-import requests.exceptions
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
@@ -19,7 +17,8 @@ from pyrate_limiter import Rate, Duration, Limiter
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
-from inf.utils.session import get_requests_session, srequest
+from inf.utils.session import srequest
+from .base import IMPERSONATE_LADDER, get_konachan_session
 
 mimetypes.add_type('image/webp', '.webp')
 _TAG_TYPES = {
@@ -171,17 +170,30 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             _last_update = time.time()
             _total_count = len(df_records)
 
-    while True:
-        session = get_requests_session()
-        logging.info(f'Try new session, UA: {session.headers["User-Agent"]!r}.')
+    # Konachan rejects cloud-hosted clients on the TLS handshake, so the User-Agent rotation
+    # this loop used to do could never help: the refusal lands before a header is read. One
+    # cancelled CI run spent 33,348 attempts proving it. A browser-impersonating session gets
+    # in on the first try; the loop stays only to walk the fingerprint ladder if one target
+    # ever stops working, and it is now bounded and backs off instead of spinning.
+    session = None
+    last_error = None
+    for attempt, impersonate in enumerate(IMPERSONATE_LADDER, start=1):
+        candidate = get_konachan_session(impersonate=impersonate)
+        logging.info(f'Trying konachan session with fingerprint {impersonate!r} '
+                     f'({attempt}/{len(IMPERSONATE_LADDER)}) ...')
         try:
-            _ = srequest(session, 'GET', 'https://konachan.com/tag.json')
-        except (httpx.HTTPError, requests.exceptions.RequestException) as err:
-            logging.info(f'Retrying session - {err!r}.')
-            continue
+            _ = srequest(candidate, 'GET', 'https://konachan.com/tag.json')
+        except Exception as err:
+            last_error = err
+            logging.warning(f'Fingerprint {impersonate!r} refused - {err!r}.')
+            time.sleep(min(2.0 * attempt, 10.0))
         else:
-            logging.info('Try success.')
+            logging.info(f'Session accepted with fingerprint {impersonate!r}.')
+            session = candidate
             break
+    if session is None:
+        raise RuntimeError(f'Konachan refused every one of the {len(IMPERSONATE_LADDER)} '
+                           f'fingerprints available in this build; last error: {last_error!r}')
 
     def _get_page(page_no):
         logging.info(f'Getting page {page_no!r} ...')
