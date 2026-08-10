@@ -24,8 +24,13 @@ on:
           entries are posts whose JSON could not be parsed before json_repair existed.'
         required: false
         default: 'false'
-  # schedule:
-  #   - cron: '0 */12 * * *'
+  # A scheduled run supplies no inputs, so every value falls through to the `||` default in the
+  # env block below: the head-only walk with a 10-page patience, a 5h fetch budget and no
+  # start_from_id. That is deliberate - the schedule's job is to keep new posts from falling
+  # behind, not to backfill. Filling a gap in the middle of the id range is a manual dispatch
+  # with `start_from_id` and a large `max_empty_pages`, and the two do not conflict.
+  schedule:
+    - cron: '0 */12 * * *'
 
 jobs:
   unittest:
