@@ -81,7 +81,7 @@ def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          tag_refresh_time: float = 365 * 24 * 60 * 60, deploy_span: float = 45 * 60, sync_mode: bool = False,
          try_failed_ids_first: bool = False, start_from_id: Optional[int] = None,
-         max_tag_refresh: int = 300):
+         max_tag_refresh: int = 300, max_empty_pages: int = 10):
     """Sync Zerochan post metadata and tag state into the target Hugging Face dataset repository."""
     start_time = time.time()
     hf_client = get_hf_client()
@@ -224,7 +224,9 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             else:
                 ptc = 0
             logging.info(f'Current continuous empty pages: {ptc!r}, has new: {has_new!r}, new count: {new_count!r}')
-            if sync_mode and ptc >= 10:
+            if sync_mode and ptc >= max_empty_pages:
+                logging.info(f'Stopping: {ptc} consecutive pages with nothing new, at or above '
+                             f'the --max-empty-pages limit of {max_empty_pages}.')
                 break
             if not ids:
                 break
@@ -456,6 +458,17 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
          'a scale of years, and every refresh is a serial request against a rate-limited site.',
 )
 @click.option(
+    '-E', '--max-empty-pages',
+    type=int,
+    default=10,
+    show_default=True,
+    help='In sync mode, stop after this many consecutive listing pages containing nothing new. '
+         'Ten suits day-to-day catch-up, where anything new sits at the head. It is far too '
+         'small for filling a gap in the middle of the range: the walk starts at the head, and '
+         'ten pages is under 500 posts, so an already-covered stretch longer than that ends the '
+         'run before the gap is ever reached. Raise it when backfilling.',
+)
+@click.option(
     '-T', '--max-tag-refresh',
     type=int,
     default=300,
@@ -492,7 +505,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     help='Start scanning from this explicit record ID instead of the stored pointer.',
 )
 def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, tag_refresh_time: float,
-        max_tag_refresh: int,
+        max_tag_refresh: int, max_empty_pages: int,
         deploy_span: float, sync_mode: bool, try_failed_ids_first: bool, start_from_id: Optional[int]):
     logging.try_init_root(logging.INFO)
     return sync(
@@ -501,6 +514,7 @@ def cli(repository: str, max_time_limit: Optional[float], upload_time_span: floa
         upload_time_span=upload_time_span,
         tag_refresh_time=tag_refresh_time,
         max_tag_refresh=max_tag_refresh,
+        max_empty_pages=max_empty_pages,
         deploy_span=deploy_span,
         sync_mode=sync_mode,
         try_failed_ids_first=try_failed_ids_first,

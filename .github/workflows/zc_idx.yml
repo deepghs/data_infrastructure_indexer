@@ -4,6 +4,16 @@ name: Zerochan Index
 on:
   #  push:
   workflow_dispatch:
+    inputs:
+      max_empty_pages:
+        description: 'Stop after this many consecutive listing pages with nothing new. 10 for
+          day-to-day catch-up; raise it (e.g. 2000) to backfill past an already-covered stretch.'
+        required: false
+        default: '10'
+      max_time_limit:
+        description: 'Stop fetching after this duration, leaving room for the final upload'
+        required: false
+        default: '5h'
   # schedule:
   #   - cron: '0 */12 * * *'
 
@@ -78,6 +88,10 @@ jobs:
           REMOTE_REPOSITORY_ZC: ${{ secrets.REMOTE_REPOSITORY_ZC }}
           ZEROCHAN_USERNAME: ${{ secrets.ZEROCHAN_USERNAME }}
           ZEROCHAN_PASSWORD: ${{ secrets.ZEROCHAN_PASSWORD }}
+          MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '10' }}
+          MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
         shell: bash
         run: |
-          python -m inf.zerochan.index
+          python -m inf.zerochan.index \
+            --max-empty-pages "$MAX_EMPTY_PAGES" \
+            --max-time-limit "$MAX_TIME_LIMIT"
