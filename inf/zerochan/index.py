@@ -103,13 +103,86 @@ def loads_zerochan_json(text: str) -> dict:
     return repaired
 
 
+def _as_text(value) -> Optional[str]:
+    """
+    Return ``value`` if it is a usable string, otherwise None.
+
+    :returns: Non-empty string, or None.
+    :rtype: Optional[str]
+    """
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _as_int(value) -> Optional[int]:
+    """
+    Coerce ``value`` to an int when that is lossless and meaningful, otherwise None.
+
+    :returns: Integer, or None.
+    :rtype: Optional[int]
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def normalise_record(item: dict) -> dict:
+    """
+    Coerce a parsed record's fields to the types the rest of the pipeline assumes.
+
+    A repaired body is structurally a dict but says nothing about what is *inside* it. Repairing
+    ``"tags": ["Female", "Don't Say "Lazy"", ...]`` can leave a fragment parsed as a number, and
+    a number is truthy, so `filter(bool, tags)` passed it straight through to ``quote_plus``,
+    which raised ``TypeError: quote_from_bytes() expected bytes`` and killed a run that had
+    already collected thousands of records.
+
+    Rather than patch that one call site, everything the record contributes downstream is
+    normalised here: strings must be non-empty strings, ids and dimensions must be integers, and
+    ``tags`` must be a list of strings. Anything else becomes None or is dropped, which the
+    callers already handle - an id that cannot be read is a failed record, not a crash.
+
+    :param item: Parsed record, possibly repaired.
+    :type item: dict
+    :returns: Record with predictable field types.
+    :rtype: dict
+    :raises ValueError: When the record has no usable id, since nothing can be keyed without it.
+    """
+    post_id = _as_int(item.get('id'))
+    if post_id is None:
+        raise ValueError(f'record has no usable id: {item.get("id")!r}')
+    tags = [t for t in (item.get('tags') if isinstance(item.get('tags'), list) else []) or []
+            if _as_text(t)]
+    return {
+        'id': post_id,
+        'width': _as_int(item.get('width')),
+        'height': _as_int(item.get('height')),
+        'size': _as_int(item.get('size')),
+        'full': _as_text(item.get('full')),
+        'small': _as_text(item.get('small')),
+        'medium': _as_text(item.get('medium')),
+        'large': _as_text(item.get('large')),
+        'hash': _as_text(item.get('hash')),
+        'source': _as_text(item.get('source')),
+        'primary': _as_text(item.get('primary')),
+        'tags': [_as_text(t) for t in tags],
+    }
+
+
 def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
     session = session or get_session()
     resp = srequest(
         session, 'GET', f'https://www.zerochan.net/{zerochan_id}',
         params={'json': '1'}
     )
-    return loads_zerochan_json(resp.text)
+    return normalise_record(loads_zerochan_json(resp.text))
 
 
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
@@ -413,14 +486,19 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             logging.info(f'Post {post_id!r} confirmed.')
             try:
                 item = get_record(post_id, session=session)
-            except (*REQUEST_ERRORS, httpx.HTTPError, json.JSONDecodeError) as err:
+            except (*REQUEST_ERRORS, httpx.HTTPError, json.JSONDecodeError, ValueError) as err:
                 logging.info(f'Post {post_id!r} skipped due to error - {err!r}.')
                 failed_ids.add(post_id)
                 has_update = True
                 continue
 
+            if not item['full']:
+                logging.warning(f'Post {post_id!r} has no file url, skipped.')
+                failed_ids.add(post_id)
+                has_update = True
+                continue
             mimetype, _ = mimetypes.guess_type(item['full'])
-            tags = list(filter(bool, item['tags']))
+            tags = item['tags']
             try:
                 row = {
                     'id': item['id'],

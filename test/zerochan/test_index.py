@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from inf.zerochan.index import loads_zerochan_json
+from inf.zerochan.index import loads_zerochan_json, normalise_record
 
 #: A real body zerochan served for post 1054049, trimmed to the shape that matters. The tag
 #: `Kokonose "Konoha" Haruka` carries quotes the site never escapes, so strict parsing fails.
@@ -124,3 +124,39 @@ class TestLoadsZerochanJsonHostileInput:
         # A valid JSON array parses fine but is not a record.
         with pytest.raises(json.JSONDecodeError):
             loads_zerochan_json('[1, 2, 3]')
+
+
+@pytest.mark.unittest
+class TestNormaliseRecord:
+    def test_numeric_tag_is_dropped(self):
+        # The shape that crashed a run: repair left a fragment as a number, bool(123) is True, so
+        # filter(bool, ...) let it reach quote_plus -> TypeError: quote_from_bytes expected bytes.
+        got = normalise_record({'id': 1, 'tags': ['Female', 123, 'Solo', None, '', 4.5]})
+        assert got['tags'] == ['Female', 'Solo']
+        assert all(isinstance(t, str) for t in got['tags'])
+
+    def test_dimensions_are_coerced_to_int(self):
+        got = normalise_record({'id': '42', 'width': '1080', 'height': 1920.0, 'size': None})
+        assert (got['id'], got['width'], got['height'], got['size']) == (42, 1080, 1920, None)
+
+    def test_bool_is_not_an_int_here(self):
+        # bool is a subclass of int, but True as a width is nonsense.
+        assert normalise_record({'id': 1, 'width': True})['width'] is None
+
+    def test_blank_strings_become_none(self):
+        got = normalise_record({'id': 1, 'source': '   ', 'primary': '', 'hash': 'abc'})
+        assert got['source'] is None and got['primary'] is None and got['hash'] == 'abc'
+
+    def test_non_list_tags_tolerated(self):
+        for bad in ('not a list', 42, None, {'a': 1}):
+            assert normalise_record({'id': 1, 'tags': bad})['tags'] == []
+
+    def test_unusable_id_raises_valueerror(self):
+        # Callers treat this like a parse failure: record the id as failed, keep going.
+        for bad in (None, 'abc', '', {}):
+            with pytest.raises(ValueError):
+                normalise_record({'id': bad})
+
+    def test_quote_bearing_tag_survives(self):
+        got = normalise_record({'id': 1, 'tags': ['Kokonose "Konoha" Haruka']})
+        assert got['tags'] == ['Kokonose "Konoha" Haruka']
