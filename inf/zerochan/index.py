@@ -59,13 +59,47 @@ def loads_zerochan_json(text: str) -> dict:
     :rtype: dict
     :raises json.JSONDecodeError: When even repair cannot produce an object.
     """
+    # Every exit from here is either a dict or a JSONDecodeError. Callers already treat that
+    # exception as "record this id as failed and carry on", so anything else escaping - a bare
+    # ValueError, a TypeError on a None body - kills a run that may have collected hundreds of
+    # records. One such escape did exactly that.
+    if not isinstance(text, str) or not text.strip():
+        raise json.JSONDecodeError('empty body', text if isinstance(text, str) else '', 0)
+
     try:
-        return json.loads(text)
+        strict = json.loads(text)
     except json.JSONDecodeError:
         pass
-    repaired = json_repair.loads(text)
-    if not isinstance(repaired, dict):
-        raise json.JSONDecodeError('repaired body is not an object', text or '', 0)
+    except RecursionError as err:
+        # The standard library's scanner recurses per nesting level, so a deeply nested body
+        # blows the stack here too - before any repair is attempted. RecursionError descends
+        # from RuntimeError, not ValueError, so it is not caught by the clause above either.
+        raise json.JSONDecodeError(f'body nests too deeply to parse: {err}', text, 0) from err
+    else:
+        # A valid JSON array is still not a record; `[1, 2, 3]` must not reach the caller.
+        if isinstance(strict, dict):
+            return strict
+        raise json.JSONDecodeError(f'body is a {type(strict).__name__}, not an object', text, 0)
+
+    # Not every non-JSON body is worth repairing. Some ids answer 200 with an HTML page for a
+    # different post - a merged duplicate - and handing that to a repair pass is pointless and
+    # hazardous: it recurses until the parser blows its stack.
+    if text.lstrip().startswith('<'):
+        raise json.JSONDecodeError('body is HTML, not JSON', text, 0)
+
+    try:
+        repaired = json_repair.loads(text)
+    except json.JSONDecodeError:
+        raise
+    except (ValueError, RecursionError) as err:
+        # json_repair reports a blown recursion limit as a bare ValueError, which is *not* a
+        # JSONDecodeError - JSONDecodeError subclasses ValueError, not the other way round, so a
+        # caller catching JSONDecodeError sees it sail straight through.
+        raise json.JSONDecodeError(f'repair failed: {err}', text, 0) from err
+
+    if not isinstance(repaired, dict) or not repaired:
+        raise json.JSONDecodeError(
+            f'repaired body is a {type(repaired).__name__}, not a record', text, 0)
     return repaired
 
 

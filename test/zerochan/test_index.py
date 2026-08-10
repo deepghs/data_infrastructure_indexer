@@ -96,3 +96,31 @@ class TestZerochanSessionPieces:
             paced.get('https://example.invalid/')
         gaps = [b - a for a, b in zip(fake.stamps, fake.stamps[1:])]
         assert all(g >= 0.19 for g in gaps), gaps
+
+
+@pytest.mark.unittest
+class TestLoadsZerochanJsonHostileInput:
+    def test_html_body_is_rejected_without_repair(self):
+        # Some ids answer 200 with the page of a different, merged post. Repairing that yields a
+        # list, and a list would sail past a caller expecting a record.
+        html = '<!DOCTYPE html>\r\n<html lang="en"><head><title>Not Found</title></head></html>'
+        with pytest.raises(json.JSONDecodeError):
+            loads_zerochan_json(html)
+
+    def test_deeply_nested_body_raises_decode_error_not_valueerror(self):
+        # json_repair reports a blown recursion limit as a bare ValueError, and JSONDecodeError
+        # subclasses ValueError rather than the reverse - so a caller catching JSONDecodeError
+        # would miss it and the whole run would die on one bad body. Regression guard for that.
+        hostile = '{"a":' + '[' * 5000
+        with pytest.raises(json.JSONDecodeError):
+            loads_zerochan_json(hostile)
+
+    def test_empty_body_raises_decode_error(self):
+        for body in ('', '   ', None):
+            with pytest.raises(json.JSONDecodeError):
+                loads_zerochan_json(body)
+
+    def test_json_array_is_rejected(self):
+        # A valid JSON array parses fine but is not a record.
+        with pytest.raises(json.JSONDecodeError):
+            loads_zerochan_json('[1, 2, 3]')
