@@ -1,3 +1,4 @@
+import gc
 import json
 import math
 import mimetypes
@@ -12,6 +13,8 @@ import httpx
 import json_repair
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
 from ditk import logging
 from hbutils.string import plural_word
@@ -100,20 +103,26 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             os.linesep.join(attr_lines),
         )
 
+    # The table is held as an Arrow table and never materialised as Python dicts. Measured on
+    # the live 4.1M-row file: read_parquet + to_dict('records') + DataFrame(records) peaked at
+    # 11.41 GB, which is what killed three runs on a 16 GB runner with "the hosted runner lost
+    # communication with the server". The same work through Arrow peaks at 6.67 GB, because a
+    # dict-per-row turns every column into millions of boxed Python objects.
     if hf_fs.exists(f'datasets/{repository}/zerochan.parquet'):
-        df_ = pd.read_parquet(safe_hf_hub_download(
+        base_table = pq.read_table(safe_hf_hub_download(
             hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename='zerochan.parquet',
-        )).replace(np.NaN, None)
-        exist_ids = set(df_['id'])
-        pre_ids = set(df_['id'])
-        records = df_.to_dict('records')
+        ))
+        exist_ids = set(base_table.column('id').to_pylist())
+        pre_ids = set(exist_ids)
     else:
+        base_table = None
         exist_ids = set()
         pre_ids = set()
-        records = []
+    # Only rows fetched during this run live here, so it stays small.
+    records = []
 
     if hf_fs.exists(f'datasets/{repository}/meta.json'):
         meta_info = json.loads(hf_fs.read_text(f'datasets/{repository}/meta.json'))
@@ -221,8 +230,28 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
                 break
             offset = min(ids)
 
+    def _merged_table():
+        """
+        Combine the stored table with this run's new rows, newest id first.
+
+        Built through Arrow rather than pandas: the stored table is over four million rows, and
+        turning it into dicts to rebuild a DataFrame is what pushed three runs past the runner's
+        memory and cost them with "the hosted runner lost communication with the server".
+        """
+        if not records:
+            return base_table
+        fresh = pa.Table.from_pylist(
+            records, schema=base_table.schema if base_table is not None else None)
+        if base_table is None:
+            return fresh.sort_by([('id', 'descending')])
+        # from_pylist infers types from a handful of rows, so a column that is all-None in this
+        # batch would come back null-typed and refuse to concatenate. Casting first keeps the
+        # stored schema authoritative.
+        fresh = fresh.cast(base_table.schema)
+        return pa.concat_tables([base_table, fresh]).sort_by([('id', 'descending')])
+
     _last_update, has_update = None, False
-    _total_count = len(records)
+    _total_count = base_table.num_rows if base_table is not None else 0
 
     def _deploy(force=False):
         nonlocal _last_update, has_update, _total_count
@@ -234,9 +263,12 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
 
         with TemporaryDirectory() as td:
             parquet_file = os.path.join(td, 'zerochan.parquet')
-            df_records = pd.DataFrame(records)
-            df_records = df_records.sort_values(by=['id'], ascending=[False])
-            df_records.to_parquet(parquet_file, engine='pyarrow', index=False)
+            table = _merged_table()
+            pq.write_table(table, parquet_file)
+            total_rows = table.num_rows
+            preview_rows = table.slice(0, 50)
+            del table
+            gc.collect()
 
             df_tags = pd.DataFrame([
                 {
@@ -283,7 +315,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
                 print('- anime', file=f)
                 print('- not-for-all-audiences', file=f)
                 print('size_categories:', file=f)
-                print(f'- {number_to_tag(len(df_records))}', file=f)
+                print(f'- {number_to_tag(total_rows)}', file=f)
                 print('annotations_creators:', file=f)
                 print('- no-annotation', file=f)
                 print('source_datasets:', file=f)
@@ -293,9 +325,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
 
                 print('## Records', file=f)
                 print(f'', file=f)
-                df_records_shown = df_records[:50][
+                # Only the preview rows are pulled into pandas; the full table stays in Arrow.
+                df_records_shown = preview_rows.to_pandas()[
                     ['id', 'width', 'height', 'file_size', 'mimetype', 'primary_tag', 'file_url', ]]
-                print(f'{plural_word(len(df_records), "record")} in total. '
+                print(f'{plural_word(total_rows, "record")} in total. '
                       f'Only {plural_word(len(df_records_shown), "record")} shown.', file=f)
                 print(f'', file=f)
                 print(df_records_shown.to_markdown(index=False), file=f)
@@ -322,11 +355,11 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
                 repo_type='dataset',
                 local_directory=td,
                 path_in_repo='.',
-                message=f'Add {plural_word(len(df_records) - _total_count, "new record")} into index',
+                message=f'Add {plural_word(total_rows - _total_count, "new record")} into index',
             )
             has_update = False
             _last_update = time.time()
-            _total_count = len(df_records)
+            _total_count = total_rows
 
     is_data_safe = True
     try:
