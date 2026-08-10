@@ -1,14 +1,14 @@
 coverage>=5
 mock>=4.0.3
-flake8~=3.5
+flake8
 testfixtures>=6.18.5
-pytest~=6.2.5
-pytest-cov~=3.0.0
-pytest-mock~=3.6.1
+pytest
+pytest-cov
+pytest-mock
 pytest-xdist>=1.34.0
-pytest-rerunfailures~=10.2
-pytest-timeout~=2.0.2
-pytest-benchmark~=3.4.0
+pytest-rerunfailures
+pytest-timeout
+pytest-benchmark
 easydict>=1.7,<2
 testtools>=2
 where>=1.0.2
@@ -17,4 +17,5 @@ pytest-image-diff>=0.0.11
 matplotlib
 natsort
 git+https://github.com/narugo1992/responses.git@dev/binary
+# Held below 5 by pyanimeinfo, not by any python version.
 lxml<5

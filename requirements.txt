@@ -12,6 +12,7 @@ pyrfc6266
 git+https://github.com/deepghs/waifuc.git@main#egg=waifuc
 orator
 dateparser
+# Held below 5 by pyanimeinfo, not by any python version.
 lxml<5
 hfutils[rar,7z]>=0.3.8
 dghs-imgutils>=0.5.0
@@ -43,6 +44,5 @@ natsort
 pytimeparse>=1.1.8
 google-re2<1.1.20250722
 pyrate-limiter<4
-# Needed only by the zerochan job, whose upstream serves malformed JSON. Marked so the jobs
-# still on 3.8 skip it instead of failing to resolve, since it requires 3.10+.
-json_repair>=0.62; python_version >= "3.10"
+# Needed by the zerochan job, whose upstream serves malformed JSON.
+json_repair>=0.62
