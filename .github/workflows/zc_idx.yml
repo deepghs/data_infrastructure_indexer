@@ -14,6 +14,16 @@ on:
         description: 'Stop fetching after this duration, leaving room for the final upload'
         required: false
         default: '5h'
+      start_from_id:
+        description: 'Begin the descending walk at this post id instead of the site head. The
+          API only pages downwards, so to fill a gap you start just above it. Empty = head.'
+        required: false
+        default: ''
+      try_failed_ids_first:
+        description: 'Retry the ids in meta.json failed_ids before walking. Most of those
+          entries are posts whose JSON could not be parsed before json_repair existed.'
+        required: false
+        default: 'false'
   # schedule:
   #   - cron: '0 */12 * * *'
 
@@ -90,8 +100,20 @@ jobs:
           ZEROCHAN_PASSWORD: ${{ secrets.ZEROCHAN_PASSWORD }}
           MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '10' }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
+          START_FROM_ID: ${{ github.event.inputs.start_from_id || '' }}
+          TRY_FAILED_IDS_FIRST: ${{ github.event.inputs.try_failed_ids_first || 'false' }}
         shell: bash
         run: |
+          EXTRA=()
+          # The walk is strictly descending, matching the API, so a targeted backfill sets its
+          # start just above the gap it means to close.
+          if [ -n "$START_FROM_ID" ]; then
+            EXTRA+=(--start-from-id "$START_FROM_ID")
+          fi
+          if [ "$TRY_FAILED_IDS_FIRST" = "true" ]; then
+            EXTRA+=(--try-failed-ids-first)
+          fi
           python -m inf.zerochan.index \
             --max-empty-pages "$MAX_EMPTY_PAGES" \
-            --max-time-limit "$MAX_TIME_LIMIT"
+            --max-time-limit "$MAX_TIME_LIMIT" \
+            "${EXTRA[@]}"
