@@ -388,10 +388,15 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                           preview=preview, df_tags=df_tags)
 
             limiter.try_acquire('hf upload limit')
+            added = total_rows - _total_count
+            logging.info(f'UPLOAD starting - {plural_word(added, "new post")}, '
+                         f'{total_rows:,} rows in total.')
+            upload_started = time.time()
             safe_upload_directory_as_directory(
                 repo_id=repository, repo_type='dataset', local_directory=td, path_in_repo='.',
-                message=f'Add {plural_word(total_rows - _total_count, "new post")} into index',
+                message=f'Add {plural_word(added, "new post")} into index',
             )
+            logging.info(f'UPLOAD done in {time.time() - upload_started:.0f}s.')
             has_update = False
             _last_update = time.time()
             _total_count = total_rows
@@ -434,6 +439,8 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                 logging.warning(f'Listing page {page_no} failed - {err!r}, moving on.')
                 continue
 
+            logging.info(f'Listing page {page_no}/{max_pages}: '
+                         f'{len(page.get("posts") or [])} posts.')
             fresh_on_page = 0
             for post_item in page.get('posts') or []:
                 if max_time_limit is not None and start_time + max_time_limit < time.time():
@@ -448,6 +455,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                     # site for having caught up.
                     fresh_on_page += 1
                     stats['recent'] += 1
+                    logging.info(f'Post {post_id} too recent, held back.')
                     continue
 
                 redirect_id = None
@@ -472,6 +480,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                 stats['ok'] += 1
                 fresh_on_page += 1
                 has_update = True
+                # One line per record. Without it the fetch phase is silent for minutes at a
+                # time and an healthy run is indistinguishable from a hung one.
+                logging.info(f'Post {post_id} confirmed '
+                             f'(page {page_no}/{max_pages}, {stats["ok"]} added this run).')
                 _deploy()
 
             if fresh_on_page:
