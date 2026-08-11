@@ -97,24 +97,37 @@ def _get_error_status_code(err: Exception) -> Optional[int]:
     return None
 
 
-def _is_retryable_upload_error(err: Exception) -> bool:
-    status_code = _get_error_status_code(err)
-    if status_code is not None:
-        return status_code in _RETRYABLE_STATUS_CODES
+#: Transport failures that say nothing about whether the commit was valid, so they deserve the
+#: same retry a gateway timeout gets.
+_RETRYABLE_TRANSPORT_ERRORS = (
+    requests.ConnectionError,
+    requests.Timeout,
+    requests.RequestException,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.ProtocolError,
+    httpx.RemoteProtocolError,
+    httpx.RequestError,
+)
 
-    # A dropped or timed-out connection says nothing about whether the commit was valid, so it
-    # deserves the same retry a gateway timeout gets. Without this a single stalled request
-    # ends a run that had already done all the work.
-    return isinstance(err, (
-        requests.ConnectionError,
-        requests.Timeout,
-        requests.RequestException,
-        httpx.TimeoutException,
-        httpx.NetworkError,
-        httpx.ProtocolError,
-        httpx.RemoteProtocolError,
-        httpx.RequestError,
-    ))
+
+def _is_retryable_upload_error(err: Exception) -> bool:
+    # Walk the cause chain rather than inspecting only the outermost exception. huggingface_hub
+    # wraps transport failures before re-raising - a dropped connection surfaces as
+    # `RuntimeError: Error while uploading 'meta.json' to the Hub` with the ConnectionError as
+    # its __cause__ - so a check on the top-level type alone sees an unfamiliar RuntimeError and
+    # gives up, ending a run that had already done hours of work.
+    seen = set()
+    current: Optional[BaseException] = err
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status_code = _get_error_status_code(current)
+        if status_code is not None:
+            return status_code in _RETRYABLE_STATUS_CODES
+        if isinstance(current, _RETRYABLE_TRANSPORT_ERRORS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def configure_hf_http_backend(timeout: float = 120.0, max_retries: int = 3):
