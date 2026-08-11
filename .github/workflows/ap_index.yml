@@ -18,15 +18,14 @@ on:
           settled before a post is recorded.'
         required: false
         default: '15d'
-  # Left off until the first full run has been verified.
-  #
   # The site publishes roughly 420 posts a week, measured across four sampling depths (620/week
   # over the last 9 days, 415-423/week over 1 to 4 months). Twice a week therefore collects
-  # about 210 posts a run, a few minutes of work, while giving a missed run a second chance
-  # before the backlog is worth noticing. Going more often would mostly re-download the 258 MB
-  # table to add nothing, since `--no-recent` holds back anything younger than 15 days anyway.
-  #  schedule:
-  #    - cron: '0 8 * * 1,4'
+  # about 210 posts a run - the catch-up run managed 26,447 in 2h11m, so that is minutes of
+  # work - while giving a missed run a second chance before the backlog is worth noticing.
+  # Going more often would mostly re-download the 265 MB table to add nothing, since
+  # `--no-recent` holds back anything younger than 15 days anyway.
+  schedule:
+    - cron: '0 8 * * 1,4'
 
 jobs:
   ap_index:
