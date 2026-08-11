@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from inf.zerochan.index import loads_zerochan_json, normalise_record
+from inf.zerochan.index import (_prefix_ids, loads_zerochan_json, normalise_record,
+                                parse_id_ranges)
 
 #: A real body zerochan served for post 1054049, trimmed to the shape that matters. The tag
 #: `Kokonose "Konoha" Haruka` carries quotes the site never escapes, so strict parsing fails.
@@ -160,3 +161,51 @@ class TestNormaliseRecord:
     def test_quote_bearing_tag_survives(self):
         got = normalise_record({'id': 1, 'tags': ['Kokonose "Konoha" Haruka']})
         assert got['tags'] == ['Kokonose "Konoha" Haruka']
+
+
+@pytest.mark.unittest
+class TestParseIdRanges:
+    def test_expands_ranges_and_bare_ids(self):
+        assert parse_id_ranges('100-105,200') == [100, 101, 102, 103, 104, 105, 200]
+
+    def test_deduplicates_and_sorts(self):
+        assert parse_id_ranges('200,100-102,101') == [100, 101, 102, 200]
+
+    def test_blank_yields_nothing(self):
+        for blank in ('', '   ', None, ',, ,'):
+            assert parse_id_ranges(blank) == []
+
+    def test_single_id_range_is_one_id(self):
+        assert parse_id_ranges('4353199-4353199') == [4353199]
+
+    def test_reversed_range_is_rejected(self):
+        # Silently fetching nothing would look like the gap was already filled.
+        with pytest.raises(ValueError):
+            parse_id_ranges('105-100')
+
+    def test_absurdly_wide_range_is_rejected(self):
+        with pytest.raises(ValueError):
+            parse_id_ranges('1-2000000')
+
+    def test_garbage_is_rejected(self):
+        with pytest.raises(ValueError):
+            parse_id_ranges('abc')
+
+    def test_real_gap_expands_to_its_width(self):
+        assert len(parse_id_ranges('4353199-4353341')) == 143
+
+
+@pytest.mark.unittest
+class TestPrefixIds:
+    def test_extra_ids_come_first_newest_first(self):
+        assert _prefix_ids([100, 300, 200], set(), False) == [300, 200, 100]
+
+    def test_failed_ids_included_only_when_asked(self):
+        assert _prefix_ids([100], {900}, False) == [100]
+        assert _prefix_ids([100], {900}, True) == [900, 100]
+
+    def test_overlap_is_deduplicated(self):
+        assert _prefix_ids([900, 100], {900}, True) == [900, 100]
+
+    def test_none_extra_ids_tolerated(self):
+        assert _prefix_ids(None, set(), False) == []

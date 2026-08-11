@@ -176,6 +176,57 @@ def normalise_record(item: dict) -> dict:
     }
 
 
+def parse_id_ranges(text: Optional[str]) -> List[int]:
+    """
+    Expand a ``lo-hi,lo-hi`` string into a list of ids.
+
+    Needed because some posts never appear in the listing at all. Verified on the gap
+    4,353,199..4,353,341: all three ids sampled fetch fine one at a time, yet paging down from
+    4,353,342 jumps straight to 4,353,198 and skips every one of the 143 ids between. Historic
+    crawls walked the listing, which is why those stretches were never filled and why no
+    ``--max-empty-pages`` value can reach them - they have to be requested by id.
+
+    A single id may be given on its own, so ``100-105,200`` is six ids.
+
+    :param text: Ranges as ``lo-hi`` or bare ids, comma separated. None or blank yields nothing.
+    :type text: Optional[str]
+    :returns: Sorted, de-duplicated ids.
+    :rtype: List[int]
+    :raises ValueError: On a malformed range, rather than silently fetching the wrong span.
+    """
+    if not text or not text.strip():
+        return []
+    ids = set()
+    for chunk in text.split(','):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if '-' in chunk.lstrip('-'):
+            low, _, high = chunk.partition('-')
+            start, end = int(low), int(high)
+            if end < start:
+                raise ValueError(f'range {chunk!r} ends before it starts')
+            if end - start > 1_000_000:
+                raise ValueError(f'range {chunk!r} spans more than a million ids')
+            ids.update(range(start, end + 1))
+        else:
+            ids.add(int(chunk))
+    return sorted(ids)
+
+
+def _prefix_ids(extra_ids: Optional[List[int]], failed_ids, try_failed_first: bool) -> List[int]:
+    """
+    Build the id list to visit before walking the listing, newest first.
+
+    :returns: Sorted descending, de-duplicated.
+    :rtype: List[int]
+    """
+    prefix = set(extra_ids or ())
+    if try_failed_first:
+        prefix.update(failed_ids)
+    return sorted(prefix, reverse=True)
+
+
 def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
     session = session or get_session()
     resp = srequest(
@@ -188,7 +239,8 @@ def get_record(zerochan_id: int, session: Optional[requests.Session] = None):
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time_span: float = 30,
          tag_refresh_time: float = 365 * 24 * 60 * 60, deploy_span: float = 45 * 60, sync_mode: bool = False,
          try_failed_ids_first: bool = False, start_from_id: Optional[int] = None,
-         max_tag_refresh: int = 300, max_empty_pages: int = 10):
+         max_tag_refresh: int = 300, max_empty_pages: int = 10,
+         extra_ids: Optional[List[int]] = None):
     """Sync Zerochan post metadata and tag state into the target Hugging Face dataset repository."""
     start_time = time.time()
     hf_client = get_hf_client()
@@ -474,7 +526,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     try:
         for post_id in _iter_image_ids(
                 offset=min_id if not sync_mode else start_from_id,
-                prefix_ids=sorted(failed_ids, reverse=True) if try_failed_ids_first else [],
+                prefix_ids=_prefix_ids(extra_ids, failed_ids, try_failed_ids_first),
         ):
             if max_time_limit is not None and start_time + max_time_limit < time.time():
                 break
@@ -570,6 +622,14 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
          'a scale of years, and every refresh is a serial request against a rate-limited site.',
 )
 @click.option(
+    '-R', '--extra-id-ranges',
+    type=str,
+    default=None,
+    help='Fetch these ids directly before walking the listing, as `lo-hi,lo-hi` or bare ids. '
+         'Some posts never appear in the listing even though they fetch fine one at a time, so '
+         'no amount of paging reaches them; this is the only way to fill those stretches.',
+)
+@click.option(
     '-E', '--max-empty-pages',
     type=int,
     default=10,
@@ -617,7 +677,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     help='Start scanning from this explicit record ID instead of the stored pointer.',
 )
 def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float, tag_refresh_time: float,
-        max_tag_refresh: int, max_empty_pages: int,
+        max_tag_refresh: int, max_empty_pages: int, extra_id_ranges: Optional[str],
         deploy_span: float, sync_mode: bool, try_failed_ids_first: bool, start_from_id: Optional[int]):
     logging.try_init_root(logging.INFO)
     return sync(
@@ -627,6 +687,7 @@ def cli(repository: str, max_time_limit: Optional[float], upload_time_span: floa
         tag_refresh_time=tag_refresh_time,
         max_tag_refresh=max_tag_refresh,
         max_empty_pages=max_empty_pages,
+        extra_ids=parse_id_ranges(extra_id_ranges),
         deploy_span=deploy_span,
         sync_mode=sync_mode,
         try_failed_ids_first=try_failed_ids_first,

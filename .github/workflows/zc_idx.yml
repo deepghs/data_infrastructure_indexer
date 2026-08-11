@@ -19,6 +19,11 @@ on:
           API only pages downwards, so to fill a gap you start just above it. Empty = head.'
         required: false
         default: ''
+      extra_id_ranges:
+        description: 'Fetch these ids directly before walking, as `lo-hi,lo-hi`. Some posts
+          never appear in the listing at all, so paging can never reach them.'
+        required: false
+        default: ''
       try_failed_ids_first:
         description: 'Retry the ids in meta.json failed_ids before walking. Most of those
           entries are posts whose JSON could not be parsed before json_repair existed.'
@@ -108,6 +113,7 @@ jobs:
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           START_FROM_ID: ${{ github.event.inputs.start_from_id || '' }}
           TRY_FAILED_IDS_FIRST: ${{ github.event.inputs.try_failed_ids_first || 'false' }}
+          EXTRA_ID_RANGES: ${{ github.event.inputs.extra_id_ranges || '' }}
         shell: bash
         run: |
           EXTRA=()
@@ -118,6 +124,9 @@ jobs:
           fi
           if [ "$TRY_FAILED_IDS_FIRST" = "true" ]; then
             EXTRA+=(--try-failed-ids-first)
+          fi
+          if [ -n "$EXTRA_ID_RANGES" ]; then
+            EXTRA+=(--extra-id-ranges "$EXTRA_ID_RANGES")
           fi
           python -m inf.zerochan.index \
             --max-empty-pages "$MAX_EMPTY_PAGES" \
