@@ -10,6 +10,9 @@ from typing import List, Optional
 import click
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from ditk import logging
 from hbutils.collection import unique
 from hbutils.string import plural_word
@@ -27,6 +30,14 @@ from .tags import _get_session, _LIMITER
 
 mimetypes.add_type('image/webp', '.webp')
 __site_url__ = 'https://rule34.xxx'
+
+#: Rows buffered as dicts before being folded into an Arrow chunk. A record here costs about
+#: 6.9 KB as a dict against a fraction of that in Arrow, so the buffer is kept small: at 20k
+#: it holds well under 200 MB, while flushing often enough not to matter for throughput.
+_PENDING_FLUSH = 20000
+
+#: Columns the API does not send, derived locally. Everything else comes straight off the item.
+_DERIVED_COLUMNS = ('filename', 'mimetype', 'scraped_at')
 _TAG_TYPES = {
     -1: 'unknown',
     0: 'general',
@@ -71,26 +82,35 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     else:
         exist_ids = set()
 
-    if hf_fs.glob(f'datasets/{repository}/tables/rule34-*.parquet'):
-        last_path = natsorted(hf_fs.glob(f'datasets/{repository}/tables/rule34-*.parquet'))[-1]
-        last_file_name = os.path.basename(last_path)
-        last_rel_file = os.path.relpath(last_path, f'datasets/{repository}')
-        current_ptr = int(os.path.splitext(last_file_name)[0].split('-')[-1])
-        df_record = pd.read_parquet(safe_hf_hub_download(
+    # The shard on disk is kept as an Arrow table and never turned into dicts. Measured on the
+    # live data a record costs ~6.9 KB as a dict, so the 2.5M-row backfill this job has to do
+    # would need about 20 GB that way, on a 16 GB runner, with _deploy building a DataFrame on
+    # top of it. The published layout is unchanged - same shard files, same 25 columns, same
+    # order - only the in-process representation differs.
+    shard_paths = natsorted(hf_fs.glob(f'datasets/{repository}/tables/rule34-*.parquet'))
+    if shard_paths:
+        last_rel_file = os.path.relpath(shard_paths[-1], f'datasets/{repository}')
+        current_ptr = int(os.path.splitext(os.path.basename(shard_paths[-1]))[0].split('-')[-1])
+        base_table = pq.read_table(safe_hf_hub_download(
             hf_client,
             repo_id=repository,
             repo_type='dataset',
             filename=last_rel_file,
-        )).replace(np.NaN, None)
-        df_record = df_record[df_record['id'] < 10 ** 9]
-        records = df_record.to_dict('records')
-        if len(records) > max_part_rows:
-            records = []
+        ))
+        table_schema = base_table.schema
+        base_table = base_table.filter(pc.less(base_table.column('id'), 10 ** 9))
+        if base_table.num_rows >= max_part_rows:
+            base_table = table_schema.empty_table()
             current_ptr = current_ptr + 1
     else:
-        records = []
+        base_table = None
+        table_schema = None
         current_ptr = 1
-    logging.info(f'Current table ptr: {current_ptr!r}, records: {len(records)}')
+    # Chunks of the shard being built: the stored rows plus each flushed batch of new ones.
+    chunks: List[pa.Table] = [base_table] if base_table is not None else []
+    pending: List[dict] = []
+    logging.info(f'Current table ptr: {current_ptr!r}, '
+                 f'rows already in this shard: {base_table.num_rows if base_table is not None else 0:,}')
 
     df_origin_tags = pd.read_parquet(safe_hf_hub_download(
         hf_client,
@@ -118,6 +138,32 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
     _last_update, has_update = None, False
     last_image_count = len(exist_ids)
 
+    def _shard_rows() -> int:
+        """Rows the shard being built would have if written right now."""
+        return sum(chunk.num_rows for chunk in chunks) + len(pending)
+
+    def _flush_pending():
+        """Fold buffered dicts into an Arrow chunk and drop the dicts."""
+        nonlocal table_schema
+        if not pending:
+            return
+        rows = [{column: row.get(column) for column in table_schema.names} for row in pending] \
+            if table_schema is not None else list(pending)
+        fresh = pa.Table.from_pylist(rows, schema=table_schema)
+        if table_schema is None:
+            # First ever shard: the first batch defines the schema every later one is cast to.
+            table_schema = fresh.schema
+        chunks.append(fresh)
+        pending.clear()
+
+    def _shard_table() -> pa.Table:
+        """The shard being built, newest id first."""
+        _flush_pending()
+        if not chunks:
+            return table_schema.empty_table() if table_schema is not None else None
+        table = chunks[0] if len(chunks) == 1 else pa.concat_tables(chunks)
+        return table.sort_by([('id', 'descending')])
+
     def _deploy(force=False):
         nonlocal _last_update, has_update, last_image_count
 
@@ -129,9 +175,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
         with TemporaryDirectory() as td:
             parquet_file = os.path.join(td, 'tables', f'rule34-{current_ptr}.parquet')
             os.makedirs(os.path.dirname(parquet_file), exist_ok=True)
-            df_records = pd.DataFrame(records)
-            df_records = df_records.sort_values(by=['id'], ascending=[False])
-            df_records.to_parquet(parquet_file, index=False)
+            shard = _shard_table()
+            pq.write_table(shard, parquet_file)
+            df_records = shard.slice(0, 50).to_pandas()
+            del shard
 
             tags_file = os.path.join(td, 'tags.parquet')
             df_tags = pd.DataFrame(list(d_tags.values()))
@@ -200,6 +247,23 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             has_update = False
             _last_update = time.time()
             last_image_count = len(exist_ids)
+
+    def _rotate_shard():
+        """
+        Seal the shard being built and start the next one.
+
+        Rotation used to be decided once, at startup, so a run only ever appended - the shard
+        grew without bound and so did memory. Sealing here keeps every shard at or under
+        --max-part-rows and keeps the working set flat no matter how long the run goes.
+        """
+        nonlocal current_ptr
+        _deploy(force=True)
+        chunks.clear()
+        if table_schema is not None:
+            chunks.append(table_schema.empty_table())
+        current_ptr += 1
+        logging.info(f'Shard sealed at {max_part_rows:,} rows; continuing into '
+                     f'rule34-{current_ptr}.parquet.')
 
     session = _get_session()
 
@@ -278,7 +342,9 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             'tags': ' '.join(['', *tags, '']),
             'scraped_at': time.time(),
         }
-        records.append(row)
+        pending.append(row)
+        if len(pending) >= _PENDING_FLUSH:
+            _flush_pending()
         for tag in tags:
             if tag not in d_tags:
                 if tag in d_origin_tags:
@@ -291,7 +357,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             d_tags[tag]['count'] = count + 1
         exist_ids.add(item['id'])
         has_update = True
-        _deploy()
+        if _shard_rows() >= max_part_rows:
+            _rotate_shard()
+        else:
+            _deploy()
 
     _deploy(force=True)
 
