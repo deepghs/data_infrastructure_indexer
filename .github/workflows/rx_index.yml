@@ -4,8 +4,11 @@ name: Rule34 Index
 on:
   #  push:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '45 12 * * 1,4'
+  # Twice a week. A run walks the listing newest-first and stops after enough consecutive pages
+  # with nothing new, so in the steady state it has very little to do; the catch-up that
+  # preceded this took 2h46m for 2.56M posts, which is the worst case by a wide margin.
+  schedule:
+    - cron: '45 12 * * 1,4'
 
 jobs:
   unittest:
