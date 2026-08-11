@@ -29,17 +29,17 @@ on:
           entries are posts whose JSON could not be parsed before json_repair existed.'
         required: false
         default: 'false'
-  # Kept off until the backfill is finished, because two runs must never overlap. Every deploy
-  # rewrites zerochan.parquet and meta.json wholesale, with no merge step: each run reads a
-  # snapshot at startup, adds its own rows, and writes the whole thing back. Whichever commits
-  # second silently erases everything the other one collected. The window is not small either -
-  # a run lasts five hours and commits every 45 minutes.
+  # Two runs must never overlap. Every deploy rewrites zerochan.parquet and meta.json wholesale
+  # with no merge step, so each run reads a snapshot at startup, adds its own rows and writes the
+  # whole thing back - whichever commits second erases what the other collected. Before starting
+  # a manual backfill alongside this schedule, check that no run is in flight, and prefer to let
+  # the scheduled one finish.
   #
-  # When it does go live it will be head-only, since a scheduled run supplies no inputs and
-  # everything falls through to the `||` defaults: 10-page patience, 5h budget, no start id.
-  # Backfilling stays a manual dispatch with `start_from_id` and a large `max_empty_pages`.
-  #  schedule:
-  #    - cron: '0 */12 * * *'
+  # A scheduled run supplies no inputs, so everything falls through to the `||` defaults below:
+  # head-only walk, 10-page patience, 5h budget, no start id and no explicit id ranges. That is
+  # the right shape for keeping up with new posts. Backfilling is a manual dispatch.
+  schedule:
+    - cron: '0 */12 * * *'
 
 jobs:
   unittest:
