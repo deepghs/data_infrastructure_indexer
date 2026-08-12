@@ -28,6 +28,26 @@ Results come back newest-first and the API caps how deep ``page`` may go, so a p
 cannot reach far. The way through is the one the prototype used: page forward until the cap,
 then restart at page 1 with ``tags=id:<lowest id seen so far``, which moves the window instead
 of the offset.
+
+What an anonymous run can and cannot see
+========================================
+
+Large stretches of the id space are invisible without an account, and the shape of that is worth
+writing down because it looks exactly like a crawler bug.
+
+``counts/posts.json`` reports the whole database while ``posts.json`` returns only what the
+caller may see. Measured anonymously: counts puts 896,697 posts in ``id:712322..1613216`` while a
+full walk of that range yields 67,695. Individual fetches agree - ``/posts/1613216.json`` is 200
+but ``/posts/1000123.json`` is 403 - and a narrow window such as ``id:1000000..1000500`` returns
+nothing even though counts says 498. The boundary is not "old is hidden": id 712,321 is
+readable, and the refusals sit in the middle of the range.
+
+So a gap audit on an anonymously-built table will always show large holes, and they are not
+misses. 97 gaps of 1000+ ids, about 204k ids in total, fall in that category. Closing them needs
+``ATFBOORU_USERNAME`` and ``ATFBOORU_APIKEY``; the walk itself already handles them, since it
+simply never sees those posts.
+
+New posts are visible anonymously, so a scheduled run keeps up with the site regardless.
 """
 import datetime
 import html
