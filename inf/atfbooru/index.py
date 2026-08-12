@@ -55,11 +55,17 @@ Reading those needs Gold, and this account is level 20 (Member). Measured over 8
 rows, every one of the 5,187 rows without a url carried ``is_banned`` and no row with a url did;
 deletion is unrelated, as 23,199 deleted posts came with a perfectly good url.
 
-Such posts are not recorded - a row with neither a url nor a checksum offers nothing to work
-with - and they are also not counted as new during the walk. That second part matters: the site
-holds roughly 19,692 of them, one per 82 ids on average, so two or three land on every 200-post
-page. Counting them as new work would hold the "nothing new" counter at zero forever and turn
-every incremental run into a full-site walk.
+One other kind of post has no url, and it is not a permanent condition: a freshly uploaded one
+whose file is still being processed. Those are easy to tell apart by where they sit - in a live
+run, 245 url-less posts spread over ``id:1582816..1612964`` were all banned, while the 33 that
+were not banned sat inside the newest 70 ids. They gain a url shortly after and the next run
+records them normally, so skipping them costs nothing.
+
+Neither kind is recorded - a row with neither a url nor a checksum offers nothing to work with -
+and neither is counted as new during the walk. That second part matters: the site holds roughly
+19,692 banned posts, one per 82 ids on average, so two or three land on every 200-post page.
+Counting them as new work would hold the "nothing new" counter at zero forever and turn every
+incremental run into a full-site walk.
 
 The reachable ceiling is therefore near 1,558,868 rather than the 1,578,560 ``counts`` reports,
 and a gap audit has to allow for it: a one- or two-id hole that ``counts`` insists is populated
@@ -388,10 +394,13 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                     if post_id not in urlless_ids:
                         urlless_ids.add(post_id)
                         stats['urlless'] += 1
+                        reason = ('reading banned files needs a Gold account'
+                                  if item.get('is_banned')
+                                  else 'likely still being processed after upload')
                         logging.warning(
                             f'Post {post_id} carries no file_url '
                             f'(banned={item.get("is_banned")}, deleted={item.get("is_deleted")}); '
-                            f'not recorded - reading banned files needs a Gold account.')
+                            f'not recorded - {reason}.')
                     continue
                 if post_id not in exist_ids:
                     fresh += 1
