@@ -9,10 +9,10 @@ on:
         required: false
         default: '5h'
       max_empty_pages:
-        description: 'Stop after this many consecutive pages with nothing new. Raise it to walk
-          past a stretch that is already indexed.'
+        description: 'Stop after this many consecutive pages carrying no id we have not seen
+          before. Raise it to walk past a stretch that is already indexed.'
         required: false
-        default: '10'
+        default: '20'
   # Off until the authenticated backfill has landed and been audited. Two runs must not overlap:
   # every deploy rewrites records.parquet wholesale, so whichever commits second wins.
   #  schedule:
@@ -82,7 +82,7 @@ jobs:
           ATFBOORU_USERNAME: ${{ secrets.ATFBOORU_USERNAME }}
           ATFBOORU_APIKEY: ${{ secrets.ATFBOORU_APIKEY }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
-          MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '10' }}
+          MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '20' }}
         shell: bash
         run: |
           python -m inf.atfbooru.index \

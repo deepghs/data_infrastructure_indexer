@@ -47,29 +47,39 @@ ten-thousand-id windows it sums to 1,578,958 against a reported total of 1,578,5
 also shows the id space is dense, not sparse: 161 of those 162 windows are at least 90% full, the
 thinnest of them 91.2%. So above ~712k a long run of missing ids means a miss, not a quiet site.
 
-What an account below Gold still cannot reach
-=============================================
+Posts that arrive without a file
+===============================
 
-Banned posts arrive with no ``file_url`` and no ``md5``: the metadata is served, the file is not.
-Reading those needs Gold, and this account is level 20 (Member). Measured over 813,283 collected
-rows, every one of the 5,187 rows without a url carried ``is_banned`` and no row with a url did;
-deletion is unrelated, as 23,199 deleted posts came with a perfectly good url.
+Two kinds of post come back with no ``file_url``, and neither is a fetch failure.
 
-One other kind of post has no url, and it is not a permanent condition: a freshly uploaded one
-whose file is still being processed. Those are easy to tell apart by where they sit - in a live
-run, 245 url-less posts spread over ``id:1582816..1612964`` were all banned, while the 33 that
-were not banned sat inside the newest 70 ids. They gain a url shortly after and the next run
-records them normally, so skipping them costs nothing.
+Banned ones are served as metadata with the file withheld - no ``file_url`` and no ``md5``.
+Reading those needs Gold and this account is level 20 (Member). Measured over 813,283 rows,
+every one of the 5,187 without a url carried ``is_banned`` and no row with a url did; deletion is
+unrelated, as 23,199 deleted posts came with a perfectly good url. The site holds roughly 19,692
+banned posts, one per 82 ids on average.
 
-Neither kind is recorded - a row with neither a url nor a checksum offers nothing to work with -
-and neither is counted as new during the walk. That second part matters: the site holds roughly
-19,692 banned posts, one per 82 ids on average, so two or three land on every 200-post page.
-Counting them as new work would hold the "nothing new" counter at zero forever and turn every
-incremental run into a full-site walk.
+The others are uploads whose file is still being processed, and that is temporary. In a live run
+the split was visible from position alone: 245 url-less posts spread over ``id:1582816..1612964``
+were all banned, while the 33 that were not sat inside the newest 70 ids.
 
-The reachable ceiling is therefore near 1,558,868 rather than the 1,578,560 ``counts`` reports,
-and a gap audit has to allow for it: a one- or two-id hole that ``counts`` insists is populated
-is almost always a banned post.
+Both are recorded. The metadata is worth keeping on its own, and a row written now is what lets
+the url be filled in later - when the file finishes processing, or from an account that may read
+banned files.
+
+Rows accumulate, they do not churn
+==================================
+
+A post already in the table is re-examined rather than skipped: if any of
+:data:`_UPDATE_TRIGGER_FIELDS` moved, the stored row is rewritten. The merge is one-directional,
+which is the whole point - a field arriving as ``None`` never overwrites a stored value. A post
+that gets banned after we recorded it keeps the url captured while it was still readable, and a
+url-less row gains its url the moment one appears.
+
+Two things this must not do. It must not rewrite the table over nothing, so the trigger fields
+exclude ``score``, ``fav_count`` and the ``last_*`` timestamps, which drift on their own. And it
+must not keep the walk alive: only ids never seen before count towards the "nothing new" counter,
+so a stretch of already-indexed posts still terminates after ``max_empty_pages`` pages even while
+a few of them are being updated in place.
 """
 import datetime
 import html
@@ -121,43 +131,123 @@ _PENDING_FLUSH = 20000
 _POSTS_PER_PAGE = 200
 
 
-def has_file_url(item: dict) -> bool:
+#: Fields whose change makes a stored row worth rewriting.
+#:
+#: Deliberately not every column. ``score``, ``up_score``, ``down_score``, ``fav_count`` and the
+#: ``last_*`` timestamps drift on their own, so including them would mark a large share of the
+#: table as changed on every pass and rewrite it for nothing. What is here is what identifies the
+#: post and its file, plus the state flags that decide whether it is still visible.
+_UPDATE_TRIGGER_FIELDS = (
+    'md5', 'file_url', 'large_file_url', 'preview_file_url', 'mimetype',
+    'file_ext', 'file_size', 'image_width', 'image_height',
+    'tag_string', 'tag_string_general', 'tag_string_character',
+    'tag_string_copyright', 'tag_string_artist', 'tag_string_meta',
+    'rating', 'source', 'parent_id', 'pixiv_id',
+    'is_deleted', 'is_banned', 'is_pending', 'is_flagged',
+)
+
+
+def row_signature(row: dict) -> int:
     """
-    Whether the API gave us a file for this post.
+    Cheap fingerprint of the fields that decide whether a stored row is stale.
 
-    Posts the account may not fetch arrive with ``file_url`` absent or empty, and on this site
-    that means banned. Measured over 813,283 collected rows: all 5,187 rows without a url carried
-    ``is_banned``, and not one row with a url did - deletion is unrelated, 23,199 deleted posts
-    came with a perfectly good url. Their ``md5`` is blank as well, so such a row would carry no
-    way to reach the image and no way to identify it either.
+    Only the fingerprint is kept for the rows already on the hub - holding all of
+    :data:`_UPDATE_TRIGGER_FIELDS` for 1.5M rows would cost far more memory than a runner has,
+    and comparing a single integer is all the walk needs to decide.
 
-    Reading banned files needs a Gold account; this one is level 20 (Member), so the roughly
-    19,692 banned posts on the site (1.25%) are out of reach no matter how often we ask.
-
-    :param item: One entry from ``/posts.json``.
-    :type item: dict
-    :returns: True when the post carries a usable file url.
-    :rtype: bool
+    :param row: Row built from an API item, or read back from the stored table.
+    :type row: dict
+    :returns: Hash over the trigger fields.
+    :rtype: int
     """
-    return bool((item.get('file_url') or '').strip())
+    return hash(tuple(row.get(field) for field in _UPDATE_TRIGGER_FIELDS))
 
 
-def drop_urlless_rows(table: pa.Table) -> pa.Table:
+def table_signatures(table: pa.Table) -> dict:
     """
-    Drop rows carrying no ``file_url`` from a loaded table.
+    Fingerprint every row of a stored table, keyed by id.
 
-    Applied on load so the published table keeps the invariant even for rows written before the
-    rule existed, without needing a separate cleanup pass.
+    Must agree with :func:`row_signature` exactly: the two are compared against each other to
+    decide whether a post changed, so any disagreement would mark the whole table stale and
+    rewrite it on every run. Columns are read in :data:`_UPDATE_TRIGGER_FIELDS` order and absent
+    ones filled with ``None`` for that reason.
+
+    Done one record batch at a time - materialising the trigger fields for 1.5M rows at once
+    would peak at gigabytes.
 
     :param table: Table as read from the hub.
     :type table: pa.Table
-    :returns: The table with url-less rows removed.
+    :returns: Mapping of post id to fingerprint.
+    :rtype: dict
+    """
+    names = set(table.schema.names)
+    signatures = {}
+    for batch in table.to_batches(max_chunksize=65536):
+        ids = batch.column('id').to_pylist()
+        columns = [batch.column(field).to_pylist() if field in names
+                   else [None] * batch.num_rows for field in _UPDATE_TRIGGER_FIELDS]
+        for post_id, values in zip(ids, zip(*columns)):
+            signatures[post_id] = hash(values)
+        del ids, columns
+    return signatures
+
+
+def merge_row(old: dict, new: dict) -> dict:
+    """
+    Fold a freshly fetched row onto the stored one, never losing a known value.
+
+    A field that arrives as ``None`` leaves the stored value alone. This is what makes the table
+    accumulate rather than churn: banned posts come back with no ``file_url`` and no ``md5``, and
+    a post that gets banned later must not erase the url recorded while it was still readable.
+    An empty string is a real value and does replace the old one - a post whose tags were all
+    removed genuinely has no tags.
+
+    :param old: Row as currently stored.
+    :type old: dict
+    :param new: Row built from the API.
+    :type new: dict
+    :returns: The merged row.
+    :rtype: dict
+    """
+    merged = dict(old)
+    for key, value in new.items():
+        if value is None:
+            continue
+        merged[key] = value
+    return merged
+
+
+def apply_updates(table: pa.Table, updates: dict) -> pa.Table:
+    """
+    Rewrite the rows whose trigger fields moved, merging rather than replacing.
+
+    One vectorised pass: the affected rows are lifted out together, merged as dicts, and put
+    back. Row-by-row against an Arrow table would mean a full scan per update.
+
+    An id in ``updates`` that the table does not hold is inserted instead of dropped. That should
+    not happen - a row reaches ``updates`` only once it is known - but silently losing a post
+    would be much worse than an extra one.
+
+    :param table: Table to update.
+    :type table: pa.Table
+    :param updates: New rows keyed by post id.
+    :type updates: dict
+    :returns: Table with the merged rows in place, id order not preserved.
     :rtype: pa.Table
     """
-    if 'file_url' not in table.schema.names:
+    if not updates:
         return table
-    lengths = pc.binary_length(pc.fill_null(table.column('file_url'), ''))
-    return table.filter(pc.greater(lengths, 0))
+    keys = pa.array(list(updates.keys()), type=table.schema.field('id').type)
+    mask = pc.fill_null(pc.is_in(table.column('id'), value_set=keys), False)
+    stale = table.filter(mask).to_pylist()
+    kept = table.filter(pc.invert(mask))
+
+    merged = [merge_row(old, updates[old['id']]) for old in stale]
+    present = {old['id'] for old in stale}
+    merged.extend(row for post_id, row in updates.items() if post_id not in present)
+
+    rows = [{column: row.get(column) for column in table.schema.names} for row in merged]
+    return pa.concat_tables([kept, pa.Table.from_pylist(rows, schema=table.schema)])
 
 
 def build_row(item: dict) -> dict:
@@ -177,7 +267,7 @@ def build_row(item: dict) -> dict:
 
 def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
          upload_time_span: float = 30, deploy_span: float = 15 * 60,
-         max_page: int = 1000, max_empty_pages: int = 10,
+         max_page: int = 1000, max_empty_pages: int = 20,
          username: Optional[str] = None, api_key: Optional[str] = None):
     """
     Sync ATFBooru post metadata into the target Hugging Face dataset repository.
@@ -221,19 +311,13 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
         base_table = pq.read_table(safe_hf_hub_download(
             hf_client, repo_id=repository, repo_type='dataset', filename='records.parquet'))
         table_schema = base_table.schema
-        _rows_read = base_table.num_rows
-        base_table = drop_urlless_rows(base_table)
-        _dropped = _rows_read - base_table.num_rows
-        if _dropped:
-            logging.warning(f'Dropped {plural_word(_dropped, "existing row")} carrying no '
-                            f'file_url; banned files need a Gold account, which this one is not.')
-        exist_ids = set(base_table.column('id').to_pylist())
+        exist_sigs = table_signatures(base_table)
         logging.info(f'Existing table loaded, {plural_word(base_table.num_rows, "row")}, '
                      f'{plural_word(len(table_schema.names), "column")}.')
     else:
         base_table = None
         table_schema = None
-        exist_ids = set()
+        exist_sigs = {}
 
     df_index_tags = pd.read_parquet(safe_hf_hub_download(
         hf_client, repo_id=repository, repo_type='dataset',
@@ -253,10 +337,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
 
     chunks: List[pa.Table] = [base_table] if base_table is not None else []
     pending: List[dict] = []
-    #: Ids seen without a file url, so each one is reported once rather than on every window that
-    #: happens to cover it.
-    urlless_ids = set()
-    stats = {'ok': 0, 'skipped': 0, 'failed': 0, 'urlless': 0}
+    #: Rows already on the hub whose trigger fields changed, keyed by id. Folded onto the stored
+    #: rows at deploy time, when the stored values are at hand to merge against.
+    updates: dict = {}
+    stats = {'ok': 0, 'updated': 0, 'skipped': 0, 'failed': 0, 'urlless': 0}
     _total_count = base_table.num_rows if base_table is not None else 0
     _last_update, has_update = None, False
 
@@ -273,11 +357,18 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
         pending.clear()
 
     def _merged_table() -> pa.Table:
+        nonlocal chunks
         _flush_pending()
         if not chunks:
             return None
         table = chunks[0] if len(chunks) == 1 else pa.concat_tables(chunks)
-        return table.sort_by([('id', 'descending')])
+        table = apply_updates(table, updates)
+        table = table.sort_by([('id', 'descending')])
+        # Fold everything back into one chunk and retire the applied updates, so the next deploy
+        # starts from the merged state instead of redoing this work.
+        chunks = [table]
+        updates.clear()
+        return table
 
     def _deploy(force: bool = False):
         nonlocal _last_update, has_update, _total_count
@@ -386,25 +477,13 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                     continue
                 if lowest_seen is None or post_id < lowest_seen:
                     lowest_seen = post_id
-                if not has_file_url(item):
-                    # Deliberately not counted as fresh. These never become rows, so treating
-                    # them as new work would hold empty_pages at zero forever and turn every
-                    # incremental run into a full-site walk: the site's ~19,692 banned posts sit
-                    # one per 82 ids on average, which is two or three on every 200-post page.
-                    if post_id not in urlless_ids:
-                        urlless_ids.add(post_id)
-                        stats['urlless'] += 1
-                        reason = ('reading banned files needs a Gold account'
-                                  if item.get('is_banned')
-                                  else 'likely still being processed after upload')
-                        logging.warning(
-                            f'Post {post_id} carries no file_url '
-                            f'(banned={item.get("is_banned")}, deleted={item.get("is_deleted")}); '
-                            f'not recorded - {reason}.')
-                    continue
-                if post_id not in exist_ids:
+                # Only unseen ids count towards stopping. A known post whose fields moved is
+                # still worth rewriting, but it must not keep the walk alive - fields like these
+                # change often enough that counting them would make the walk run to the bottom of
+                # the site every time.
+                if post_id not in exist_sigs:
                     fresh += 1
-                    yield item
+                yield item
 
             logging.info(f'Page {page} (below {below_id}): {len(items)} posts, {fresh} new, '
                          f'lowest id seen {lowest_seen:,}.')
@@ -426,24 +505,47 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
             if max_time_limit is not None and start_time + max_time_limit < time.time():
                 break
             post_id = item['id']
-            if post_id in exist_ids:
+            row = build_row(item)
+            signature = row_signature(row)
+            known = post_id in exist_sigs
+
+            if known and exist_sigs[post_id] == signature:
                 stats['skipped'] += 1
                 continue
-            pending.append(build_row(item))
-            if len(pending) >= _PENDING_FLUSH:
-                _flush_pending()
-            _ping_tags(item)
-            exist_ids.add(post_id)
-            stats['ok'] += 1
+
+            if not row.get('file_url'):
+                stats['urlless'] += 1
+                reason = ('reading banned files needs a Gold account'
+                          if row.get('is_banned') else 'likely still being processed after upload')
+                logging.warning(f'Post {post_id} carries no file_url '
+                                f'(banned={row.get("is_banned")}, deleted={row.get("is_deleted")}) '
+                                f'- {reason}. Recorded anyway; a later run fills the url in '
+                                f'without ever overwriting a known value with a missing one.')
+
+            if known:
+                updates[post_id] = row
+                stats['updated'] += 1
+                logging.info(f'Post {post_id} changed ({stats["updated"]} updated this run).')
+            else:
+                pending.append(row)
+                if len(pending) >= _PENDING_FLUSH:
+                    _flush_pending()
+                # Tag counts are accumulated on first sight only. Re-counting on every update
+                # would inflate them, and undoing the previous contribution would mean keeping
+                # each post's old tag list around.
+                _ping_tags(item)
+                stats['ok'] += 1
+                logging.info(f'Post {post_id} confirmed ({stats["ok"]} added this run).')
+
+            exist_sigs[post_id] = signature
             has_update = True
-            logging.info(f'Post {post_id} confirmed ({stats["ok"]} added this run).')
             _deploy()
     finally:
         _deploy(force=True)
 
-    logging.info(f'Done. {stats["ok"]} added, {stats["skipped"]} already known, '
-                 f'{stats["urlless"]} skipped for having no file_url, {stats["failed"]} failed. '
-                 f'Challenges answered: {session.challenges}.')
+    logging.info(f'Done. {stats["ok"]} added, {stats["updated"]} updated, '
+                 f'{stats["skipped"]} unchanged, {stats["urlless"]} without a file url, '
+                 f'{stats["failed"]} failed. Challenges answered: {session.challenges}.')
 
 
 def _write_readme(md_file: str, total_rows: int, preview: pd.DataFrame, df_tags: pd.DataFrame):
@@ -527,7 +629,7 @@ def _write_readme(md_file: str, total_rows: int, preview: pd.DataFrame, df_tags:
 @click.option('-P', '--max-page', type=int, default=1000, show_default=True,
               help='Page number at which to restart the walk with a lower id bound. The API '
                    'will not page indefinitely, so this is how the window advances.')
-@click.option('-E', '--max-empty-pages', type=int, default=10, show_default=True,
+@click.option('-E', '--max-empty-pages', type=int, default=20, show_default=True,
               help='Stop after this many consecutive pages with nothing new. Raise it to walk '
                    'past a stretch that is already indexed.')
 @click.option('-U', '--username', type=str, envvar='ATFBOORU_USERNAME', default=None,
