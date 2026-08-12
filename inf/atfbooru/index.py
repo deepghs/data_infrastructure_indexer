@@ -29,25 +29,27 @@ cannot reach far. The way through is the one the prototype used: page forward un
 then restart at page 1 with ``tags=id:<lowest id seen so far``, which moves the window instead
 of the offset.
 
-What an anonymous run can and cannot see
+Two things that will mislead a gap audit
 ========================================
 
-Large stretches of the id space are invisible without an account, and the shape of that is worth
-writing down because it looks exactly like a crawler bug.
+The id space above ~712k is genuinely sparse - a 10,000-id window there often holds only a few
+dozen posts - so an audit of the published table shows 97 gaps of 1000+ ids, around 204k ids in
+total. They are not misses. Two separate traps make them look like misses:
 
-``counts/posts.json`` reports the whole database while ``posts.json`` returns only what the
-caller may see. Measured anonymously: counts puts 896,697 posts in ``id:712322..1613216`` while a
-full walk of that range yields 67,695. Individual fetches agree - ``/posts/1613216.json`` is 200
-but ``/posts/1000123.json`` is 403 - and a narrow window such as ``id:1000000..1000500`` returns
-nothing even though counts says 498. The boundary is not "old is hidden": id 712,321 is
-readable, and the refusals sit in the middle of the range.
+``counts/posts.json`` does not answer id-range queries with a post count. It returns something
+close to the width of the id range, and it can exceed it: ``id:>=1612000`` reports 1,276 for a
+range spanning 1,217 ids that actually holds 116 posts. Do not size a backlog with it.
 
-So a gap audit on an anonymously-built table will always show large holes, and they are not
-misses. 97 gaps of 1000+ ids, about 204k ids in total, fall in that category. Closing them needs
-``ATFBOORU_USERNAME`` and ``ATFBOORU_APIKEY``; the walk itself already handles them, since it
-simply never sees those posts.
+An id with no post answers ``403``, not ``404``. Picking round numbers and finding them refused
+proves nothing about access; ids the table already holds in the same range - 1057338, 1123070,
+1142162, 1227744, 1451659 - all answer 200 anonymously.
 
-New posts are visible anonymously, so a scheduled run keeps up with the site regardless.
+The check that settles it is exhausting a window by paging and diffing against the table. Done
+on three windows, ``id:1000000..1010000``, ``id:1170000..1180000`` and ``id:1470000..1480000``,
+the walk found 18, 31 and 548 posts and the table already held every one of them.
+
+No credentials are needed for any of this. ``ATFBOORU_USERNAME`` and ``ATFBOORU_APIKEY`` are
+wired through if they are ever set, but anonymous access reaches the whole site.
 """
 import datetime
 import html
