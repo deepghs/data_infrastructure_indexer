@@ -29,27 +29,41 @@ cannot reach far. The way through is the one the prototype used: page forward un
 then restart at page 1 with ``tags=id:<lowest id seen so far``, which moves the window instead
 of the offset.
 
-Two things that will mislead a gap audit
-========================================
+Credentials are required
+========================
 
-The id space above ~712k is genuinely sparse - a 10,000-id window there often holds only a few
-dozen posts - so an audit of the published table shows 97 gaps of 1000+ ids, around 204k ids in
-total. They are not misses. Two separate traps make them look like misses:
+Most of the site is invisible without an account, and the site says which is which rather than
+leaving it to be guessed: a post that does not exist answers ``404
+ActiveRecord::RecordNotFound``, one that exists but is withheld answers ``403
+Pundit::NotAuthorizedError``. A 403 is not an absent post.
 
-``counts/posts.json`` does not answer id-range queries with a post count. It returns something
-close to the width of the id range, and it can exceed it: ``id:>=1612000`` reports 1,276 for a
-range spanning 1,217 ids that actually holds 116 posts. Do not size a backlog with it.
+The size of the difference, on ``id:1000000..1010000``: anonymously the first page returns 18
+posts; authenticated it returns a full 200 and the window walks out to 9,976, exactly what
+``counts`` reports for it. Scanning ids 1,000,000..1,000,119 one at a time anonymously gives 118
+x 403 and 2 x 404 - not one visible post.
 
-An id with no post answers ``403``, not ``404``. Picking round numbers and finding them refused
-proves nothing about access; ids the table already holds in the same range - 1057338, 1123070,
-1142162, 1227744, 1451659 - all answer 200 anonymously.
+``counts/posts.json`` is trustworthy for sizing, including with an id range. Asked for all 162
+ten-thousand-id windows it sums to 1,578,958 against a reported total of 1,578,560. That profile
+also shows the id space is dense, not sparse: 161 of those 162 windows are at least 90% full, the
+thinnest of them 91.2%. So above ~712k a long run of missing ids means a miss, not a quiet site.
 
-The check that settles it is exhausting a window by paging and diffing against the table. Done
-on three windows, ``id:1000000..1010000``, ``id:1170000..1180000`` and ``id:1470000..1480000``,
-the walk found 18, 31 and 548 posts and the table already held every one of them.
+What an account below Gold still cannot reach
+=============================================
 
-No credentials are needed for any of this. ``ATFBOORU_USERNAME`` and ``ATFBOORU_APIKEY`` are
-wired through if they are ever set, but anonymous access reaches the whole site.
+Banned posts arrive with no ``file_url`` and no ``md5``: the metadata is served, the file is not.
+Reading those needs Gold, and this account is level 20 (Member). Measured over 813,283 collected
+rows, every one of the 5,187 rows without a url carried ``is_banned`` and no row with a url did;
+deletion is unrelated, as 23,199 deleted posts came with a perfectly good url.
+
+Such posts are not recorded - a row with neither a url nor a checksum offers nothing to work
+with - and they are also not counted as new during the walk. That second part matters: the site
+holds roughly 19,692 of them, one per 82 ids on average, so two or three land on every 200-post
+page. Counting them as new work would hold the "nothing new" counter at zero forever and turn
+every incremental run into a full-site walk.
+
+The reachable ceiling is therefore near 1,558,868 rather than the 1,578,560 ``counts`` reports,
+and a gap audit has to allow for it: a one- or two-id hole that ``counts`` insists is populated
+is almost always a banned post.
 """
 import datetime
 import html
@@ -64,6 +78,7 @@ import click
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from ditk import logging
 from hbutils.string import plural_word
@@ -98,6 +113,45 @@ _PENDING_FLUSH = 20000
 
 #: Posts per API request. The site accepts 200, which is also what the prototype used.
 _POSTS_PER_PAGE = 200
+
+
+def has_file_url(item: dict) -> bool:
+    """
+    Whether the API gave us a file for this post.
+
+    Posts the account may not fetch arrive with ``file_url`` absent or empty, and on this site
+    that means banned. Measured over 813,283 collected rows: all 5,187 rows without a url carried
+    ``is_banned``, and not one row with a url did - deletion is unrelated, 23,199 deleted posts
+    came with a perfectly good url. Their ``md5`` is blank as well, so such a row would carry no
+    way to reach the image and no way to identify it either.
+
+    Reading banned files needs a Gold account; this one is level 20 (Member), so the roughly
+    19,692 banned posts on the site (1.25%) are out of reach no matter how often we ask.
+
+    :param item: One entry from ``/posts.json``.
+    :type item: dict
+    :returns: True when the post carries a usable file url.
+    :rtype: bool
+    """
+    return bool((item.get('file_url') or '').strip())
+
+
+def drop_urlless_rows(table: pa.Table) -> pa.Table:
+    """
+    Drop rows carrying no ``file_url`` from a loaded table.
+
+    Applied on load so the published table keeps the invariant even for rows written before the
+    rule existed, without needing a separate cleanup pass.
+
+    :param table: Table as read from the hub.
+    :type table: pa.Table
+    :returns: The table with url-less rows removed.
+    :rtype: pa.Table
+    """
+    if 'file_url' not in table.schema.names:
+        return table
+    lengths = pc.binary_length(pc.fill_null(table.column('file_url'), ''))
+    return table.filter(pc.greater(lengths, 0))
 
 
 def build_row(item: dict) -> dict:
@@ -161,6 +215,12 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
         base_table = pq.read_table(safe_hf_hub_download(
             hf_client, repo_id=repository, repo_type='dataset', filename='records.parquet'))
         table_schema = base_table.schema
+        _rows_read = base_table.num_rows
+        base_table = drop_urlless_rows(base_table)
+        _dropped = _rows_read - base_table.num_rows
+        if _dropped:
+            logging.warning(f'Dropped {plural_word(_dropped, "existing row")} carrying no '
+                            f'file_url; banned files need a Gold account, which this one is not.')
         exist_ids = set(base_table.column('id').to_pylist())
         logging.info(f'Existing table loaded, {plural_word(base_table.num_rows, "row")}, '
                      f'{plural_word(len(table_schema.names), "column")}.')
@@ -187,7 +247,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
 
     chunks: List[pa.Table] = [base_table] if base_table is not None else []
     pending: List[dict] = []
-    stats = {'ok': 0, 'skipped': 0, 'failed': 0}
+    #: Ids seen without a file url, so each one is reported once rather than on every window that
+    #: happens to cover it.
+    urlless_ids = set()
+    stats = {'ok': 0, 'skipped': 0, 'failed': 0, 'urlless': 0}
     _total_count = base_table.num_rows if base_table is not None else 0
     _last_update, has_update = None, False
 
@@ -317,6 +380,19 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
                     continue
                 if lowest_seen is None or post_id < lowest_seen:
                     lowest_seen = post_id
+                if not has_file_url(item):
+                    # Deliberately not counted as fresh. These never become rows, so treating
+                    # them as new work would hold empty_pages at zero forever and turn every
+                    # incremental run into a full-site walk: the site's ~19,692 banned posts sit
+                    # one per 82 ids on average, which is two or three on every 200-post page.
+                    if post_id not in urlless_ids:
+                        urlless_ids.add(post_id)
+                        stats['urlless'] += 1
+                        logging.warning(
+                            f'Post {post_id} carries no file_url '
+                            f'(banned={item.get("is_banned")}, deleted={item.get("is_deleted")}); '
+                            f'not recorded - reading banned files needs a Gold account.')
+                    continue
                 if post_id not in exist_ids:
                     fresh += 1
                     yield item
@@ -357,7 +433,8 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
         _deploy(force=True)
 
     logging.info(f'Done. {stats["ok"]} added, {stats["skipped"]} already known, '
-                 f'{stats["failed"]} failed. Challenges answered: {session.challenges}.')
+                 f'{stats["urlless"]} skipped for having no file_url, {stats["failed"]} failed. '
+                 f'Challenges answered: {session.challenges}.')
 
 
 def _write_readme(md_file: str, total_rows: int, preview: pd.DataFrame, df_tags: pd.DataFrame):
