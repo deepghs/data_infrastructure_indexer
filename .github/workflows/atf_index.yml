@@ -13,6 +13,13 @@ on:
           before. Raise it to walk past a stretch that is already indexed.'
         required: false
         default: '20'
+      start_below_id:
+        description: 'Begin just below this id instead of at the newest post. Use it to resume a
+          backfill that ran out of time, or to work a known gap: left empty, the walk starts at
+          the newest page and stops after max_empty_pages pages of already-indexed posts, long
+          before it could reach one.'
+        required: false
+        default: ''
   # Off until the authenticated backfill has landed and been audited. Two runs must not overlap:
   # every deploy rewrites records.parquet wholesale, so whichever commits second wins.
   #  schedule:
@@ -83,8 +90,16 @@ jobs:
           ATFBOORU_APIKEY: ${{ secrets.ATFBOORU_APIKEY }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '20' }}
+          START_BELOW_ID: ${{ github.event.inputs.start_below_id }}
         shell: bash
         run: |
+          # Passed only when set: the option is typed as an integer, so handing it an empty
+          # string would fail the run before it starts.
+          EXTRA=()
+          if [ -n "$START_BELOW_ID" ]; then
+            EXTRA+=(--start-below-id "$START_BELOW_ID")
+          fi
           python -m inf.atfbooru.index \
             --max-time-limit "$MAX_TIME_LIMIT" \
-            --max-empty-pages "$MAX_EMPTY_PAGES"
+            --max-empty-pages "$MAX_EMPTY_PAGES" \
+            "${EXTRA[@]}"

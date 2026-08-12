@@ -29,6 +29,13 @@ cannot reach far. The way through is the one the prototype used: page forward un
 then restart at page 1 with ``tags=id:<lowest id seen so far``, which moves the window instead
 of the offset.
 
+A run that starts at the newest post cannot resume a half-finished backfill: the first pages are
+all already indexed, so the "nothing new" counter fills up and the walk stops long before
+reaching where the previous run left off. ``--start-below-id`` begins the walk at a given id
+instead, which is also how a known gap gets worked directly. Raising ``--max-empty-pages`` would
+technically get there too, but only after re-walking everything above it - at 200 posts a page,
+1.4M indexed rows is close to four hours of paging to reach the first useful request.
+
 Credentials are required
 ========================
 
@@ -268,6 +275,7 @@ def build_row(item: dict) -> dict:
 def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
          upload_time_span: float = 30, deploy_span: float = 15 * 60,
          max_page: int = 1000, max_empty_pages: int = 20,
+         start_below_id: Optional[int] = None,
          username: Optional[str] = None, api_key: Optional[str] = None):
     """
     Sync ATFBooru post metadata into the target Hugging Face dataset repository.
@@ -284,6 +292,9 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
     :param max_page: Page number at which to restart the walk with a lower ``id:<`` bound. The
         API refuses to page indefinitely, so this is how the window advances.
     :type max_page: int
+    :param start_below_id: Begin the walk just below this id rather than at the newest post.
+        None starts at the newest.
+    :type start_below_id: Optional[int]
     :param max_empty_pages: Stop after this many consecutive pages containing nothing new.
     :type max_empty_pages: int
     :param username: Site login for authenticated requests.
@@ -443,7 +454,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
         walk restarts at page 1 bounded by the lowest id it has seen. Without that it could only
         ever read the first few hundred pages.
         """
-        below_id = None
+        below_id = start_below_id
         lowest_seen = None
         page = 1
         empty_pages = 0
@@ -632,12 +643,17 @@ def _write_readme(md_file: str, total_rows: int, preview: pd.DataFrame, df_tags:
 @click.option('-E', '--max-empty-pages', type=int, default=20, show_default=True,
               help='Stop after this many consecutive pages with nothing new. Raise it to walk '
                    'past a stretch that is already indexed.')
+@click.option('-B', '--start-below-id', type=int, envvar='START_BELOW_ID', default=None,
+              help='Begin the walk just below this id instead of at the newest post. Use it to '
+                   'resume a backfill that ran out of time, or to work a known gap directly: '
+                   'without it the walk starts at the newest page and stops after '
+                   '--max-empty-pages pages of already-indexed posts, long before reaching it.')
 @click.option('-U', '--username', type=str, envvar='ATFBOORU_USERNAME', default=None,
               show_envvar=True, help='Site username for authenticated requests.')
 @click.option('-K', '--api-key', type=str, envvar='ATFBOORU_APIKEY', default=None,
               show_envvar=True, help='Site API key for authenticated requests.')
 def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float,
-        deploy_span: float, max_page: int, max_empty_pages: int,
+        deploy_span: float, max_page: int, max_empty_pages: int, start_below_id: Optional[int],
         username: Optional[str], api_key: Optional[str]):
     logging.try_init_root(logging.INFO)
     sync(
@@ -647,6 +663,7 @@ def cli(repository: str, max_time_limit: Optional[float], upload_time_span: floa
         deploy_span=deploy_span,
         max_page=max_page,
         max_empty_pages=max_empty_pages,
+        start_below_id=start_below_id,
         username=username,
         api_key=api_key,
     )
