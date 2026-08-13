@@ -87,6 +87,16 @@ exclude ``score``, ``fav_count`` and the ``last_*`` timestamps, which drift on t
 must not keep the walk alive: only ids never seen before count towards the "nothing new" counter,
 so a stretch of already-indexed posts still terminates after ``max_empty_pages`` pages even while
 a few of them are being updated in place.
+
+Publication rate
+================
+
+About 7,000 posts a week, measured 2026-08-13 through ``counts/posts.json`` with ``age`` filters,
+authenticated: 7,555 over one week, 14,035 over two (7,018/week), 30,431 over a month
+(7,101/week) and 88,724 over three months (6,825/week). Consistent across every depth.
+
+Measure this authenticated. Anonymously the same site reports roughly a tenth of it, which is what
+produced the earlier 670/week figure this file used to carry.
 """
 import datetime
 import html

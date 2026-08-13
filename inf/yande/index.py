@@ -1,3 +1,13 @@
+"""Index sync for yande.re.
+
+Publication rate
+================
+
+About 300 posts a week, measured 2026-08-13: the 100 newest posts span 2.29 days, giving 306/week.
+
+The moebooru API returns ``created_at`` as a unix timestamp on every post, so this needs a single
+request and no assumptions.
+"""
 import math
 import mimetypes
 import os

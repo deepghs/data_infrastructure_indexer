@@ -66,6 +66,17 @@ which is the point - a duplicated row is far harder to notice once it is publish
 
 Images missed at a boundary cannot be recovered by deduplication; they are what the audit after
 the sweep is for, and single images can be fetched by id from ``/api/v1/images/{id}``.
+
+Publication rate
+================
+
+About 570 images a week - the lowest rate of anything indexed in this repository - measured
+2026-08-13. The site reported 1,086,290 images at the time of the rebuild, and the rebuild
+recorded exactly that many.
+
+The API exposes no timestamp anywhere in a listing beyond each image's own ``date_added``, and no
+count endpoint, so a rate has to come from the ids and dates of the images themselves rather than
+from the site telling us.
 """
 import datetime
 import math

@@ -58,6 +58,18 @@ This does not mean a run rewrites three quarters of the table. The walk stops 20
 crosses into already-indexed territory, so only those pages get corrected on an ordinary run.
 Refreshing the tags of everything already stored is a deliberate act: run with a very large
 ``--max-empty-pages`` so the walk continues to the bottom of the site.
+
+Publication rate
+================
+
+About 950 posts a week, measured 2026-08-13 from ``counts/posts.json`` with an ``age`` filter,
+which counts server-side and needs no sampling: 927 over the last week, 5,059 over the last month
+(1,180/week) and 11,974 over three months (921/week). The three agree, so the figure is steady
+rather than a burst.
+
+Note the count includes deleted posts unless excluded - plain, ``status:any`` and the default all
+report the same total, of which ``status:deleted`` was 26,349 of 172,895. This job records only
+live posts, so compare against ``-status:deleted`` (146,543 at the same date) when auditing.
 """
 import datetime
 import math

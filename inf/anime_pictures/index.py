@@ -31,6 +31,14 @@ The site publishes roughly 420 posts a week, so a run has very little to do in t
 state. ``--no-recent`` holds back posts younger than its threshold: tags and scores keep moving
 for a while after publication, and re-fetching a post is not something this job does, so it is
 better to let a post settle before recording it.
+
+Publication rate
+================
+
+About 430 posts a week, measured 2026-08-13 by comparing the newest page's ``pubtime`` against
+pages far behind it, at 80 posts a page: 1,600 posts back spans 24.97 days (448/week) and 8,000
+posts back spans 132.59 days (422/week). Two depths an order of magnitude apart agreeing is what
+makes this trustworthy - a shallow sample would only show the last few hours.
 """
 import datetime
 import json

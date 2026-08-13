@@ -1,3 +1,13 @@
+"""Index sync for konachan.com.
+
+Publication rate
+================
+
+About 230 posts a week, measured 2026-08-13: the 100 newest posts span 3.03 days, giving 231/week.
+
+A three-day span from a single request is a comfortable sample here precisely because the site is
+slow; the same request on a busy site would cover minutes and say nothing useful.
+"""
 import math
 import mimetypes
 import os

@@ -65,6 +65,16 @@ One prototype behaviour is deliberately not carried over: for a tag missing from
 1.05M posts of roughly twenty tags each that is thousands of extra requests to fill in a table that
 a separate job already maintains. Unknown tags are recorded with ``id: -1`` instead and gain their
 metadata when that job next runs.
+
+Publication rate
+================
+
+About 19,700 posts a week, measured 2026-08-13. The site held 6,813,020 posts against the
+5,757,267 in the table, whose content stopped on 2025-08-03 - 1,055,753 posts over 375 days.
+
+That is an average across a year rather than a current rate, so it smooths over any recent change
+in tempo. It is the right basis for sizing a backlog; a current-week figure would be better for
+sizing a schedule, and this site offers a ``count`` attribute in its XML API that could give one.
 """
 import datetime
 import html

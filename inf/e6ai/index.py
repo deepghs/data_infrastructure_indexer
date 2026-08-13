@@ -54,6 +54,15 @@ because aibooru's schema has no column to mark a deleted post with.
 In practice this is rare - all 320 of the newest posts sampled on 2026-08-13 had a url, and none
 were deleted - but it is warned about when it happens, and such posts do not count towards the
 "nothing new" counter.
+
+Publication rate
+================
+
+About 750 posts a week, measured 2026-08-13: the 320 newest posts span three days, and the site's
+newest id was 179,784 against 126,075 in the table left by the prototype.
+
+Like e621, this API has no counts endpoint, so this is a sample rather than a server-side count -
+though a three-day span makes it considerably steadier than a same-hour one would be.
 """
 import datetime
 import math

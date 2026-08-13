@@ -1,3 +1,19 @@
+"""Index sync for zerochan.net.
+
+Publication rate
+================
+
+Roughly 1,750 ids a week, measured 2026-08-13 - and this one is the least certain figure in the
+repository, for two reasons worth stating.
+
+Nothing in this API carries a timestamp. Neither the listing nor an image's own detail response has
+a date field of any kind, so a rate cannot be derived from the content and has to come from id
+growth against our own last run: 99 ids between this index's newest (4,717,348, written 0.39 days
+earlier) and the site's newest (4,717,447), giving 1,757/week.
+
+A 0.39-day window and 99 ids is a small sample, and ids are not posts. Re-measure over a longer gap
+before relying on it for anything.
+"""
 import gc
 import json
 import math

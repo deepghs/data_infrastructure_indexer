@@ -1,3 +1,16 @@
+"""Index sync for danbooru.donmai.us.
+
+Publication rate
+================
+
+About 49,600 posts a week, measured 2026-08-13 from ``counts/posts.json?tags=age:..1w``, which
+returned 49,641. That endpoint counts server-side over the whole database, so it needs no sampling
+and no assumption about how evenly uploads land.
+
+Sampling the 200 newest posts instead would have suggested 56,499/week, but those 200 span only
+0.02 days - half an hour - so that number describes a moment, not a week. Prefer the counts
+endpoint wherever a site offers one.
+"""
 import gc
 import math
 import mimetypes

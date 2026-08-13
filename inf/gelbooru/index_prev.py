@@ -1,3 +1,16 @@
+"""Index sync for gelbooru.com.
+
+Publication rate
+================
+
+About 49,300 posts a week, measured 2026-08-13 by comparing the newest page's ``created_at``
+against deeper pages, 100 posts a page: 5,000 posts back spans 0.75 days (46,365/week) and 20,000
+posts back spans 2.84 days (49,310/week). The site total was 14,033,351 at that date.
+
+Use ``created_at``, not ``change``. ``change`` is the last-modified time, so a post edited recently
+looks recent however old it is - measuring with it gave 42,733/week at one depth and 122,992 at
+another, a threefold disagreement that is entirely an artefact of edits.
+"""
 import glob
 import html
 import json

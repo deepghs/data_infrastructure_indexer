@@ -1,3 +1,15 @@
+"""Index sync for e621.net.
+
+Publication rate
+================
+
+About 10,800 posts a week, measured 2026-08-13: the 320 newest posts (one full page, the API's
+maximum - it refuses anything above 320) span 0.21 days, giving 10,827/week.
+
+This site has no counts endpoint, so the figure comes from a sample rather than a server-side
+count, and 0.21 days is short enough that a busy or quiet few hours would move it. Treat it as the
+right order of magnitude rather than a precise rate.
+"""
 import base64
 import json
 import math

@@ -1,3 +1,19 @@
+"""Index sync for rule34.xxx.
+
+Publication rate
+================
+
+About 74,000 ids a week, measured 2026-08-13, and the unit matters: this is ids, not posts.
+
+The API exposes no ``created_at`` - only ``change``, the last-modified time, which cannot date a
+post - so the rate comes from id growth instead. Between this index's newest recorded id
+(18,424,887, written 1.29 days earlier) and the site's newest (18,438,589) lie 13,702 ids, giving
+74,405/week. The site reported 15,913,434 posts at that date.
+
+Some ids never become visible posts, so the number of new posts is lower than this by an unknown
+margin. It is an upper bound on what a run has to collect, which is the useful direction for
+sizing a schedule.
+"""
 import html
 import json
 import math
