@@ -137,10 +137,19 @@ def _walk_ladder(ladder, timeout, username, api_key, proxy):
         try:
             resp = session.get(f'{__site_url__}/posts.json', params={'limit': '1'})
             if resp.status_code != 200:
-                # The body is the only thing that distinguishes a blocked address from a
-                # challenge or a missing header, so it goes in the log rather than a bare code.
-                body = ' '.join(resp.text.split())[:240]
-                last = f'{chosen}: HTTP {resp.status_code} - {body!r}'
+                # Cloudflare's mitigations look alike from the status code and differ entirely in
+                # what answers them, so record what identifies them: cf-mitigated names the
+                # mitigation, cf-ray proves it is Cloudflare at all, and the body carries the
+                # challenge platform's script path when it is a JS challenge.
+                body = ' '.join(resp.text.split())
+                marks = {key: resp.headers.get(key) for key in
+                         ('server', 'cf-ray', 'cf-mitigated', 'cf-chl-out', 'retry-after')
+                         if resp.headers.get(key)}
+                hints = [name for name in ('challenge-platform', 'turnstile', 'cf_chl_opt',
+                                           'jschl', '__cf_bm', 'cf-please-wait')
+                         if name in body]
+                last = (f'{chosen}: HTTP {resp.status_code} {marks} hints={hints} '
+                        f'body={body[:400]!r}')
                 logging.warning(f'E6AI session attempt failed ({route}) - {last}.')
                 continue
             resp.json()
