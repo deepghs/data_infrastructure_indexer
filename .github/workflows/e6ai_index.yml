@@ -20,10 +20,15 @@ on:
           the newest page and stops after max_empty_pages pages of already-indexed posts.'
         required: false
         default: ''
-  # Off until the backfill has landed and been audited. Runs must not overlap: deploy rewrites
-  # e6ai.parquet whole, so whichever finishes second replaces the other's work.
-  #  schedule:
-  #    - cron: '0 0 * * *'
+  # Twice a week. The site publishes about 750 posts a week (320 newest posts spanned three days
+  # when measured on 2026-08-13), so a run collects around 375 - two pages of fetching plus the
+  # twenty it spends confirming there is nothing older. The table is small enough that transfer is
+  # not what limits the cadence; there is simply little to gain from going daily at this rate.
+  #
+  # Runs must not overlap: deploy rewrites e6ai.parquet whole, so whichever finishes second
+  # replaces the other's work. Disable this block before dispatching a backfill by hand.
+  schedule:
+    - cron: '23 7 * * 2,5'
 
 jobs:
   e6ai_index:
