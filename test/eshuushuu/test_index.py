@@ -217,3 +217,56 @@ class TestSignature:
         row = build_row(_api_image())
         missing = [f for f in _UPDATE_TRIGGER_FIELDS if f not in row]
         assert not missing, f'trigger fields absent from the row: {missing}'
+
+
+@pytest.mark.unittest
+class TestConformToSchema:
+    def test_a_column_inferred_as_null_is_corrected(self):
+        # The failure that killed the first sweep: caption is empty on every image in the first
+        # batch, Arrow types it null, and the first captioned image then cannot be written.
+        from inf.eshuushuu.index import _TABLE_SCHEMA, conform_to_schema
+        rows = [build_row({'image_id': i, 'filename': f'x{i}', 'ext': 'png'}) for i in (1, 2)]
+        inferred = pa.Table.from_pylist(rows)
+        assert inferred.schema.field('caption').type == pa.null()
+        fixed = conform_to_schema(inferred)
+        assert fixed.schema == _TABLE_SCHEMA
+        assert fixed.num_rows == 2
+
+    def test_a_conformed_table_accepts_a_value_in_that_column(self):
+        from inf.eshuushuu.index import _TABLE_SCHEMA, conform_to_schema
+        fixed = conform_to_schema(pa.Table.from_pylist(
+            [build_row({'image_id': 1, 'filename': 'x', 'ext': 'png'})]))
+        row = build_row({'image_id': 2, 'filename': 'y', 'ext': 'png', 'caption': 'words'})
+        more = pa.Table.from_pylist([{c: row.get(c) for c in _TABLE_SCHEMA.names}],
+                                    schema=_TABLE_SCHEMA)
+        combined = pa.concat_tables([fixed, more])
+        assert combined.column('caption').to_pylist() == [None, 'words']
+
+    def test_a_missing_column_is_added(self):
+        from inf.eshuushuu.index import _TABLE_SCHEMA, conform_to_schema
+        rows = [build_row(_api_image())]
+        table = pa.Table.from_pylist(rows).drop_columns(['md5_hash'])
+        fixed = conform_to_schema(table)
+        assert fixed.schema == _TABLE_SCHEMA
+        assert fixed.column('md5_hash').to_pylist() == [None]
+
+    def test_an_unknown_column_is_dropped(self):
+        from inf.eshuushuu.index import _TABLE_SCHEMA, conform_to_schema
+        rows = [dict(build_row(_api_image()), legacy_column='x')]
+        fixed = conform_to_schema(pa.Table.from_pylist(rows))
+        assert fixed.schema == _TABLE_SCHEMA
+        assert 'legacy_column' not in fixed.schema.names
+
+    def test_a_matching_table_is_returned_as_is(self):
+        from inf.eshuushuu.index import _TABLE_SCHEMA, conform_to_schema
+        row = build_row(_api_image())
+        table = pa.Table.from_pylist([{c: row.get(c) for c in _TABLE_SCHEMA.names}],
+                                     schema=_TABLE_SCHEMA)
+        assert conform_to_schema(table) is table
+
+    def test_real_rows_fit_the_declared_schema(self):
+        from inf.eshuushuu.index import _TABLE_SCHEMA
+        rows = [build_row(_api_image(image_id=i)) for i in range(3)]
+        table = pa.Table.from_pylist([{c: r.get(c) for c in _TABLE_SCHEMA.names} for r in rows],
+                                     schema=_TABLE_SCHEMA)
+        assert table.schema == _TABLE_SCHEMA and table.num_rows == 3

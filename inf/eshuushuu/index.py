@@ -134,6 +134,63 @@ _UNORDERED_TRIGGER_FIELDS = frozenset({
     'tags', 'tag_ids', 'tags_artist', 'tags_character', 'tags_source', 'tags_theme',
 })
 
+#: The published schema, stated rather than inferred.
+#:
+#: Inference cannot be trusted for the first batch of a fresh index. ``caption`` is empty on every
+#: one of 2,400 sampled images, so Arrow types that column as ``null`` - and once that lands in the
+#: schema, the first image that does carry a caption fails to write with "Invalid null value".
+#: ``medium_url``, ``large_url``, ``source_url``, ``misc_metadata`` and ``replacement_id`` are
+#: sparse enough to be one unlucky batch away from the same fate.
+#:
+#: Stating it also makes the published shape a contract rather than a side effect of whichever
+#: images happened to be fetched first.
+_TABLE_SCHEMA = pa.schema([
+    ('id', pa.int64()),
+    ('username', pa.string()),
+    ('user_id', pa.int64()),
+    ('original_filename', pa.string()),
+    ('filename', pa.string()),
+    ('ext', pa.string()),
+    ('src_filename', pa.string()),
+    ('file_url', pa.string()),
+    ('cdn_url', pa.string()),
+    ('thumbnail_url', pa.string()),
+    ('medium_url', pa.string()),
+    ('large_url', pa.string()),
+    ('md5_hash', pa.string()),
+    ('file_size', pa.int64()),
+    ('width', pa.int64()),
+    ('height', pa.int64()),
+    ('mimetype', pa.string()),
+    ('rating', pa.float64()),
+    ('score', pa.float64()),
+    ('num_ratings', pa.int64()),
+    ('favorites', pa.int64()),
+    ('posts', pa.int64()),
+    ('status', pa.int64()),
+    ('caption', pa.string()),
+    ('source_url', pa.string()),
+    ('misc_metadata', pa.string()),
+    ('replacement_id', pa.int64()),
+    ('created_at', pa.float64()),
+    ('tags', pa.list_(pa.string())),
+    ('tag_ids', pa.list_(pa.int64())),
+    ('tags_artist', pa.list_(pa.string())),
+    ('tags_character', pa.list_(pa.string())),
+    ('tags_source', pa.list_(pa.string())),
+    ('tags_theme', pa.list_(pa.string())),
+])
+
+#: Same reasoning for the tag table: ``usage_count`` and ``type_name`` can be absent.
+_TAGS_SCHEMA = pa.schema([
+    ('id', pa.int64()),
+    ('name', pa.string()),
+    ('type', pa.int64()),
+    ('type_name', pa.string()),
+    ('count', pa.int64()),
+    ('usage_count', pa.int64()),
+])
+
 
 def to_timestamp(value: Optional[str]) -> Optional[float]:
     """
@@ -222,6 +279,45 @@ def build_row(item: dict) -> dict:
         'created_at': to_timestamp(item.get('date_added')),
         **split_tags(item),
     }
+
+
+def conform_to_schema(table: pa.Table, schema: pa.Schema = None) -> pa.Table:
+    """
+    Bring a table read from the hub onto the declared schema.
+
+    A stored table can disagree with :data:`_TABLE_SCHEMA` in two ways, and both have happened: a
+    column typed ``null`` because every value in the batch that created it was empty, or a column
+    that did not exist when the table was written. Loading such a table and adopting its schema
+    would carry the fault forward, so it is reshaped on the way in instead.
+
+    :param table: Table as read from the hub.
+    :type table: pa.Table
+    :param schema: Target schema, defaulting to the published one.
+    :type schema: pa.Schema
+    :returns: The same rows under the declared schema.
+    :rtype: pa.Table
+    """
+    schema = schema if schema is not None else _TABLE_SCHEMA
+    if table.schema == schema:
+        return table
+    differences = []
+    arrays = []
+    for field in schema:
+        if field.name in table.schema.names:
+            column = table.column(field.name)
+            if column.type != field.type:
+                differences.append(f'{field.name}: {column.type} -> {field.type}')
+                column = column.cast(field.type)
+            arrays.append(column)
+        else:
+            differences.append(f'{field.name}: absent -> {field.type}')
+            arrays.append(pa.nulls(table.num_rows, type=field.type))
+    dropped = [n for n in table.schema.names if n not in schema.names]
+    if dropped:
+        differences.append(f'dropped: {", ".join(dropped)}')
+    logging.warning(f'Stored table does not match the declared schema; conforming it. '
+                    f'{"; ".join(differences)}')
+    return pa.Table.from_arrays(arrays, schema=schema)
 
 
 def _drop_duplicate_ids(table: pa.Table) -> pa.Table:
@@ -323,17 +419,18 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
 
     if hf_client.file_exists(repo_id=repository, repo_type='dataset', filename='table.parquet'):
-        base_table = pq.read_table(safe_hf_hub_download(
-            hf_client, repo_id=repository, repo_type='dataset', filename='table.parquet'))
+        base_table = conform_to_schema(pq.read_table(safe_hf_hub_download(
+            hf_client, repo_id=repository, repo_type='dataset', filename='table.parquet')))
         table_schema = base_table.schema
         exist_sigs = table_signatures(base_table)
         logging.info(f'Existing table loaded, {plural_word(base_table.num_rows, "row")}, '
                      f'{plural_word(len(table_schema.names), "column")}.')
     else:
         base_table = None
-        table_schema = None
+        table_schema = _TABLE_SCHEMA
         exist_sigs = {}
-        logging.info('No table yet; building this index from scratch.')
+        logging.info(f'No table yet; building this index from scratch under the declared '
+                     f'{len(_TABLE_SCHEMA.names)}-column schema.')
 
     d_tags = {}
     if hf_client.file_exists(repo_id=repository, repo_type='dataset', filename='tags.parquet'):
@@ -397,7 +494,14 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
             df_out = pd.DataFrame(list(d_tags.values()))
             if len(df_out):
                 df_out = df_out.sort_values(['count', 'id'], ascending=[False, True])
-                df_out.to_parquet(os.path.join(td, 'tags.parquet'), index=False)
+                # Through the declared schema rather than pandas' inference, for the same reason
+                # the main table is: a sparse column must not be typed from one batch.
+                pq.write_table(
+                    pa.Table.from_pylist(
+                        [{c: row.get(c) for c in _TAGS_SCHEMA.names}
+                         for row in df_out.to_dict('records')],
+                        schema=_TAGS_SCHEMA),
+                    os.path.join(td, 'tags.parquet'))
 
             _write_readme(os.path.join(td, 'README.md'), total_rows=total_rows,
                           preview=preview, df_tags=df_out)
