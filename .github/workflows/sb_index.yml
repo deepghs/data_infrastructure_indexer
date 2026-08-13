@@ -24,10 +24,16 @@ on:
           the newest page and stops after max_empty_pages pages of already-indexed posts.'
         required: false
         default: ''
-  # Off until the backfill has landed and been audited. Runs must not overlap: a deploy rewrites
-  # the shard being written, so whichever finishes second replaces the other's work.
-  #  schedule:
-  #    - cron: '0 0 * * *'
+  # Twice a week. The site publishes about 19,700 posts a week, so a run collects roughly 9,850 -
+  # ten requests at 1000 posts each, plus the twenty pages spent confirming there is nothing older.
+  # Fetching is not the cost here: a deploy rewrites the whole shard being written, which took
+  # 16 minutes at 1.07M rows during the backfill and will take longer as the shard fills towards
+  # its 2.5M cap. Going more often would mostly re-upload the same shard.
+  #
+  # Runs must not overlap: a deploy rewrites that shard entire, so whichever finishes second
+  # replaces the other's work. Disable this block before dispatching a backfill by hand.
+  schedule:
+    - cron: '37 9 * * 3,6'
 
 jobs:
   sb_index:
