@@ -91,6 +91,11 @@ jobs:
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '20' }}
           START_BELOW_ID: ${{ github.event.inputs.start_below_id }}
+          # Fallback route only. The site refuses datacentre addresses with a Cloudflare
+          # interstitial, so a direct attempt is made first and the pool is billed per request.
+          BRD_PROXY_URL: ${{ secrets.BRD_PROXY_URL }}
+          BRD_API_KEY: ${{ secrets.BRD_API_KEY }}
+          BRD_ZONE: ${{ secrets.BRD_ZONE }}
         shell: bash
         run: |
           # Passed only when set: the option is typed as an integer, so an empty string would fail

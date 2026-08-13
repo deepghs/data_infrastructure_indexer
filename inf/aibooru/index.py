@@ -228,7 +228,9 @@ def table_signatures(table: pa.Table) -> dict:
 def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
          upload_time_span: float = 30, deploy_span: float = 15 * 60,
          max_empty_pages: int = 20, start_below_id: Optional[int] = None,
-         username: Optional[str] = None, api_key: Optional[str] = None):
+         username: Optional[str] = None, api_key: Optional[str] = None,
+         proxy_pool: Optional[str] = None, brd_api_key: Optional[str] = None,
+         brd_zone: Optional[str] = None):
     """
     Sync AIBooru post metadata into the target Hugging Face dataset repository.
 
@@ -249,6 +251,12 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
     :type username: Optional[str]
     :param api_key: Matching API key, optional.
     :type api_key: Optional[str]
+    :param proxy_pool: Bright Data proxy URL, used only if direct access is refused.
+    :type proxy_pool: Optional[str]
+    :param brd_api_key: Bright Data API key, needed to allowlist the runner on the zone.
+    :type brd_api_key: Optional[str]
+    :param brd_zone: Zone to allowlist into.
+    :type brd_zone: Optional[str]
     """
     start_time = time.time()
     delete_detached_cache()
@@ -256,7 +264,10 @@ def sync(repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
     rate = Rate(1, int(math.ceil(Duration.SECOND * upload_time_span)))
     limiter = Limiter(rate, max_delay=1 << 32)
 
-    session = get_aibooru_session(username=username, api_key=api_key)
+    # A fixed session id keeps the proxy's exit address stable across the run, if it comes to
+    # that; direct access is tried first.
+    session = get_aibooru_session(username=username, api_key=api_key, proxy_pool=proxy_pool,
+                              proxy_session='aibindex', brd_api_key=brd_api_key, brd_zone=brd_zone)
 
     if not hf_client.repo_exists(repo_id=repository, repo_type='dataset'):
         hf_client.create_repo(repo_id=repository, repo_type='dataset', private=True)
@@ -513,9 +524,17 @@ def _write_readme(md_file: str, total_rows: int, preview: pd.DataFrame):
               help='Site login. Optional; the API answers anonymously.')
 @click.option('-K', '--api-key', type=str, envvar='AIBOORU_APIKEY', default=None,
               help='Matching API key.')
+@click.option('--proxy-pool', type=str, envvar='BRD_PROXY_URL', default=None,
+              help='Bright Data proxy URL. Only used if direct access is refused, since the pool '
+                   'is billed per request.')
+@click.option('--brd-api-key', type=str, envvar='BRD_API_KEY', default=None,
+              help='Bright Data API key, needed to allowlist this host on the zone.')
+@click.option('--brd-zone', type=str, envvar='BRD_ZONE', default=None,
+              help='Bright Data zone to allowlist into.')
 def cli(repository: str, max_time_limit: Optional[float], upload_time_span: float,
         deploy_span: float, max_empty_pages: int, start_below_id: Optional[int],
-        username: Optional[str], api_key: Optional[str]):
+        username: Optional[str], api_key: Optional[str], proxy_pool: Optional[str],
+        brd_api_key: Optional[str], brd_zone: Optional[str]):
     """Sync the AIBooru index."""
     logging.try_init_root(logging.INFO)
     sync(
@@ -527,6 +546,9 @@ def cli(repository: str, max_time_limit: Optional[float], upload_time_span: floa
         start_below_id=start_below_id,
         username=username,
         api_key=api_key,
+        proxy_pool=proxy_pool,
+        brd_api_key=brd_api_key,
+        brd_zone=brd_zone,
     )
 
 
