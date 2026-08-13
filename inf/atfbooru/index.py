@@ -101,7 +101,6 @@ import click
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from ditk import logging
 from hbutils.string import plural_word
@@ -113,6 +112,9 @@ from hfutils.utils import number_to_tag
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
 from inf.utils.session import REQUEST_ERRORS
+from inf.utils.upsert import apply_updates
+from inf.utils.upsert import row_signature as _row_signature
+from inf.utils.upsert import table_signatures as _table_signatures
 from .base import __site_url__, get_atfbooru_session
 
 mimetypes.add_type('image/webp', '.webp')
@@ -156,105 +158,26 @@ _UPDATE_TRIGGER_FIELDS = (
 
 def row_signature(row: dict) -> int:
     """
-    Cheap fingerprint of the fields that decide whether a stored row is stale.
-
-    Only the fingerprint is kept for the rows already on the hub - holding all of
-    :data:`_UPDATE_TRIGGER_FIELDS` for 1.5M rows would cost far more memory than a runner has,
-    and comparing a single integer is all the walk needs to decide.
+    Fingerprint this site's trigger fields for one row.
 
     :param row: Row built from an API item, or read back from the stored table.
     :type row: dict
-    :returns: Hash over the trigger fields.
+    :returns: Hash over :data:`_UPDATE_TRIGGER_FIELDS`.
     :rtype: int
     """
-    return hash(tuple(row.get(field) for field in _UPDATE_TRIGGER_FIELDS))
+    return _row_signature(row, _UPDATE_TRIGGER_FIELDS)
 
 
 def table_signatures(table: pa.Table) -> dict:
     """
-    Fingerprint every row of a stored table, keyed by id.
-
-    Must agree with :func:`row_signature` exactly: the two are compared against each other to
-    decide whether a post changed, so any disagreement would mark the whole table stale and
-    rewrite it on every run. Columns are read in :data:`_UPDATE_TRIGGER_FIELDS` order and absent
-    ones filled with ``None`` for that reason.
-
-    Done one record batch at a time - materialising the trigger fields for 1.5M rows at once
-    would peak at gigabytes.
+    Fingerprint every stored row, keyed by id.
 
     :param table: Table as read from the hub.
     :type table: pa.Table
     :returns: Mapping of post id to fingerprint.
     :rtype: dict
     """
-    names = set(table.schema.names)
-    signatures = {}
-    for batch in table.to_batches(max_chunksize=65536):
-        ids = batch.column('id').to_pylist()
-        columns = [batch.column(field).to_pylist() if field in names
-                   else [None] * batch.num_rows for field in _UPDATE_TRIGGER_FIELDS]
-        for post_id, values in zip(ids, zip(*columns)):
-            signatures[post_id] = hash(values)
-        del ids, columns
-    return signatures
-
-
-def merge_row(old: dict, new: dict) -> dict:
-    """
-    Fold a freshly fetched row onto the stored one, never losing a known value.
-
-    A field that arrives as ``None`` leaves the stored value alone. This is what makes the table
-    accumulate rather than churn: banned posts come back with no ``file_url`` and no ``md5``, and
-    a post that gets banned later must not erase the url recorded while it was still readable.
-    An empty string is a real value and does replace the old one - a post whose tags were all
-    removed genuinely has no tags.
-
-    :param old: Row as currently stored.
-    :type old: dict
-    :param new: Row built from the API.
-    :type new: dict
-    :returns: The merged row.
-    :rtype: dict
-    """
-    merged = dict(old)
-    for key, value in new.items():
-        if value is None:
-            continue
-        merged[key] = value
-    return merged
-
-
-def apply_updates(table: pa.Table, updates: dict) -> pa.Table:
-    """
-    Rewrite the rows whose trigger fields moved, merging rather than replacing.
-
-    One vectorised pass: the affected rows are lifted out together, merged as dicts, and put
-    back. Row-by-row against an Arrow table would mean a full scan per update.
-
-    An id in ``updates`` that the table does not hold is inserted instead of dropped. That should
-    not happen - a row reaches ``updates`` only once it is known - but silently losing a post
-    would be much worse than an extra one.
-
-    :param table: Table to update.
-    :type table: pa.Table
-    :param updates: New rows keyed by post id.
-    :type updates: dict
-    :returns: Table with the merged rows in place, id order not preserved.
-    :rtype: pa.Table
-    """
-    if not updates:
-        return table
-    keys = pa.array(list(updates.keys()), type=table.schema.field('id').type)
-    mask = pc.fill_null(pc.is_in(table.column('id'), value_set=keys), False)
-    stale = table.filter(mask).to_pylist()
-    kept = table.filter(pc.invert(mask))
-
-    merged = [merge_row(old, updates[old['id']]) for old in stale]
-    present = {old['id'] for old in stale}
-    merged.extend(row for post_id, row in updates.items() if post_id not in present)
-
-    rows = [{column: row.get(column) for column in table.schema.names} for row in merged]
-    return pa.concat_tables([kept, pa.Table.from_pylist(rows, schema=table.schema)])
+    return _table_signatures(table, _UPDATE_TRIGGER_FIELDS)
 
 
 def build_row(item: dict) -> dict:

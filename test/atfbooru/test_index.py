@@ -1,8 +1,9 @@
 import pyarrow as pa
 import pytest
 
-from inf.atfbooru.index import (_UPDATE_TRIGGER_FIELDS, apply_updates, build_row, merge_row,
-                                row_signature, table_signatures)
+from inf.atfbooru.index import (_UPDATE_TRIGGER_FIELDS, build_row, row_signature,
+                                table_signatures)
+from inf.utils.upsert import apply_updates, merge_row
 
 
 def _post(**overrides):
