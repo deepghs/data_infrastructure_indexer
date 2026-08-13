@@ -1,0 +1,105 @@
+#file: noinspection YAMLSchemaValidation
+name: E6AI Index
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_time_limit:
+        description: 'Stop fetching after this duration, leaving room for the final upload'
+        required: false
+        default: '5h'
+      max_empty_pages:
+        description: 'Stop after this many consecutive pages carrying no id we have not seen
+          before. Raise it hugely to walk to the bottom of the site and refresh everything
+          already stored.'
+        required: false
+        default: '20'
+      start_below_id:
+        description: 'Begin just below this id instead of at the newest post. Use it to resume a
+          backfill that ran out of time, or to work a known gap: left empty, the walk starts at
+          the newest page and stops after max_empty_pages pages of already-indexed posts.'
+        required: false
+        default: ''
+  # Off until the backfill has landed and been audited. Runs must not overlap: deploy rewrites
+  # e6ai.parquet whole, so whichever finishes second replaces the other's work.
+  #  schedule:
+  #    - cron: '0 0 * * *'
+
+jobs:
+  e6ai_index:
+    name: E6AI Index
+    runs-on: ${{ matrix.os }}
+    # GitHub hard-kills a job at 360 minutes; leave room for the final upload.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - 'ubuntu-latest'
+        python-version:
+          - '3.11'
+
+    steps:
+      - name: Get system version for Linux
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        shell: bash
+        run: |
+          echo "OS_NAME=Linux" >> $GITHUB_ENV
+          echo "IS_WIN=" >> $GITHUB_ENV
+          echo "IS_MAC=" >> $GITHUB_ENV
+      - name: Set environment for Cpython
+        if: ${{ !contains(matrix.python-version, 'pypy') }}
+        shell: bash
+        run: |
+          echo "IS_PYPY=" >> $GITHUB_ENV
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          submodules: 'recursive'
+      - name: Set up system dependencies on Linux
+        if: ${{ env.OS_NAME == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree wget curl make zip
+          sudo apt-get install -y git-lfs
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Test the basic environment
+        shell: bash
+        run: |
+          python -V
+          pip --version
+          df -h /
+          free -h
+      - name: Run e6ai index
+        env:
+          CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REMOTE_REPOSITORY_E6AI: ${{ secrets.REMOTE_REPOSITORY_E6AI }}
+          E6AI_USERNAME: ${{ secrets.E6AI_USERNAME }}
+          E6AI_APIKEY: ${{ secrets.E6AI_APIKEY }}
+          MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
+          MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '20' }}
+          START_BELOW_ID: ${{ github.event.inputs.start_below_id }}
+        shell: bash
+        run: |
+          # Passed only when set: the option is typed as an integer, so an empty string would fail
+          # the run before it starts.
+          EXTRA=()
+          if [ -n "$START_BELOW_ID" ]; then
+            EXTRA+=(--start-below-id "$START_BELOW_ID")
+          fi
+          python -m inf.e6ai.index \
+            --max-time-limit "$MAX_TIME_LIMIT" \
+            --max-empty-pages "$MAX_EMPTY_PAGES" \
+            "${EXTRA[@]}"

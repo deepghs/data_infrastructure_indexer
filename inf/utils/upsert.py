@@ -20,7 +20,7 @@ per row does.
 Each site supplies its own trigger fields, because the column names differ: atfbooru has
 ``tag_string``, aibooru calls the same thing ``tags``, e6ai stores it as a list.
 """
-from typing import Dict, Iterable, Sequence
+from typing import Collection, Dict, Iterable, Optional, Sequence
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -45,7 +45,8 @@ def merge_row(old: dict, new: dict) -> dict:
     return merged
 
 
-def row_signature(row: dict, fields: Sequence[str]) -> int:
+def row_signature(row: dict, fields: Sequence[str],
+                  unordered_fields: Collection[str] = ()) -> int:
     """
     Fingerprint the fields that decide whether a stored row is stale.
 
@@ -53,13 +54,17 @@ def row_signature(row: dict, fields: Sequence[str]) -> int:
     :type row: dict
     :param fields: Trigger fields, in a fixed order.
     :type fields: Sequence[str]
+    :param unordered_fields: Of those, the list-valued ones whose order carries no meaning. See
+        :func:`_normalise` for why this exists.
+    :type unordered_fields: Collection[str]
     :returns: Hash over those fields.
     :rtype: int
     """
-    return hash(tuple(_hashable(row.get(field)) for field in fields))
+    return hash(tuple(_normalise(field, row.get(field), unordered_fields) for field in fields))
 
 
-def table_signatures(table: pa.Table, fields: Sequence[str]) -> Dict[int, int]:
+def table_signatures(table: pa.Table, fields: Sequence[str],
+                     unordered_fields: Collection[str] = ()) -> Dict[int, int]:
     """
     Fingerprint every row of a stored table, keyed by id.
 
@@ -74,6 +79,9 @@ def table_signatures(table: pa.Table, fields: Sequence[str]) -> Dict[int, int]:
     :type table: pa.Table
     :param fields: Trigger fields, in the same order used for :func:`row_signature`.
     :type fields: Sequence[str]
+    :param unordered_fields: Must match what :func:`row_signature` is given, for the same reason
+        the field order must.
+    :type unordered_fields: Collection[str]
     :returns: Mapping of post id to fingerprint.
     :rtype: Dict[int, int]
     """
@@ -84,7 +92,9 @@ def table_signatures(table: pa.Table, fields: Sequence[str]) -> Dict[int, int]:
         columns = [batch.column(field).to_pylist() if field in names
                    else [None] * batch.num_rows for field in fields]
         for post_id, values in zip(ids, zip(*columns)):
-            signatures[post_id] = hash(tuple(_hashable(v) for v in values))
+            signatures[post_id] = hash(tuple(
+                _normalise(field, value, unordered_fields)
+                for field, value in zip(fields, values)))
         del ids, columns
     return signatures
 
@@ -122,15 +132,77 @@ def apply_updates(table: pa.Table, updates: Dict[int, dict]) -> pa.Table:
     return pa.concat_tables([kept, pa.Table.from_pylist(rows, schema=table.schema)])
 
 
+def adds_anything(stored_row: Optional[dict], fetched_row: dict, stored_signature: int,
+                  fields: Sequence[str], unordered_fields: Collection[str] = ()) -> bool:
+    """
+    Whether a fetched row would actually change the stored one.
+
+    Comparing the fetched row's fingerprint against the stored one is not enough, because the merge
+    protects stored values from ``None``. A field the API has stopped sending therefore reads as a
+    difference that rewriting cannot resolve: the stored row keeps its value, the next fetch still
+    sends ``None``, and the row is marked changed again. Forever.
+
+    Measured on e6ai over 60 re-fetched posts: ``sample_url`` went value-to-``None`` on 18% of them,
+    and ``file_url``, ``preview_url`` and ``mimetype`` on 7% - the posts that had since been
+    deleted. Left alone, every run would rewrite a fifth of everything it looked at and report it as
+    changed, drowning the real edits.
+
+    So the question is asked of the merge result rather than the fetched row.
+
+    :param stored_row: The row as currently stored, or None when it cannot be read back.
+    :type stored_row: Optional[dict]
+    :param fetched_row: Row built from the API.
+    :type fetched_row: dict
+    :param stored_signature: Fingerprint of the stored row.
+    :type stored_signature: int
+    :param fields: Trigger fields.
+    :type fields: Sequence[str]
+    :param unordered_fields: Trigger fields whose list order carries no meaning.
+    :type unordered_fields: Collection[str]
+    :returns: True when the merge would differ from what is stored.
+    :rtype: bool
+    """
+    if stored_row is None:
+        return True
+    merged = merge_row(stored_row, fetched_row)
+    return row_signature(merged, fields, unordered_fields) != stored_signature
+
+
+def _normalise(field: str, value, unordered_fields: Collection[str]):
+    """
+    Prepare one field value for hashing, sorting the ones whose order means nothing.
+
+    Some APIs return a list in an unstable order. Measured on e6ai: re-fetching 12 stored posts
+    found one whose ``tags`` held exactly the same values in a different order. Left alone that row
+    reads as changed on every single run - and rewriting it changes nothing, so it reads as changed
+    again next time. It never converges.
+
+    Sorting only happens for the fields a site names, because order is not always noise: a list of
+    child post ids or of sample variants may well be meaningful. What is stored keeps the API's own
+    order either way; this affects the comparison only.
+
+    :param field: Field name.
+    :type field: str
+    :param value: Field value.
+    :param unordered_fields: Fields whose list order carries no meaning.
+    :type unordered_fields: Collection[str]
+    :returns: Something :func:`hash` accepts.
+    """
+    if field in unordered_fields and isinstance(value, list):
+        # key=repr keeps mixed-type lists sortable rather than raising.
+        value = sorted(value, key=repr)
+    return _hashable(value)
+
+
 def _hashable(value):
     """
     Make an API value hashable without changing what counts as equal.
 
     Lists and dicts appear in these tables - e6ai stores tags as a list and ``sample_alternates``
-    as a nested object - and both are unhashable. Converting to tuples keeps order significant,
-    which is what we want: a reordered tag list is a change worth recording, and Arrow will hand
-    the list back in the order it was written, so comparing a stored row against a fetched one
-    stays stable.
+    as a nested object - and both are unhashable. Converting to tuples is order-preserving, which
+    is the right default: Arrow hands a list back in the order it was written, so a stored row and
+    a freshly fetched one compare stably. Where a site's API does not hold that order stable,
+    :func:`_normalise` sorts the field first.
 
     :param value: Field value.
     :returns: Something :func:`hash` accepts.

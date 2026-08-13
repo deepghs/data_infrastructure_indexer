@@ -1,14 +1,15 @@
-"""Session helper for aibooru.online.
+"""Session helper for e6ai.net.
 
-Nothing exotic guards this site - no proof of work, no Cloudflare challenge. A browser TLS
-fingerprint is still worth using, since a plain client library fingerprint is the cheapest thing
-for a site to start refusing later, and the ladder costs nothing when the first rung works.
+An e621-derived site, and like the rest of that family it cares about the User-Agent: a bare
+client-library fingerprint is what these sites refuse first. A browser TLS fingerprint plus a
+browser UA answers 200, verified 2026-08-13.
 
-Credentials are optional. Measured 2026-08-13: ``/posts.json`` and ``/counts/posts.json`` both
-answer 200 anonymously, and ``counts`` reports the same 172,895 posts with or without a login, so
-nothing is being withheld from an anonymous caller the way atfbooru withholds most of its
-database. ``AIBOORU_USERNAME`` / ``AIBOORU_APIKEY`` are wired through for when that changes.
+Credentials are optional here. ``/posts.json`` answers anonymously and a sample of the 320 newest
+posts came back with every ``file.url`` populated, so nothing is being withheld the way atfbooru
+withholds banned files. ``E6AI_USERNAME`` / ``E6AI_APIKEY`` are wired through as HTTP Basic auth,
+which is what the e621 API family accepts, for when that stops being true.
 """
+import base64
 from typing import Optional
 
 from curl_cffi import requests as cffi_requests
@@ -16,22 +17,22 @@ from ditk import logging
 
 from inf.utils.impersonate import build_ladder
 
-__site_url__ = 'https://aibooru.online'
+__site_url__ = 'https://e6ai.net'
 
-#: Per-request timeout. The API answers in well under a second; this is for a stalled connection.
+#: Per-request timeout.
 DEFAULT_TIMEOUT = 60.0
 
-#: Fingerprints to try, in order. Chrome works today, so it leads.
+#: Fingerprints to try, in order.
 IMPERSONATE_LADDER = build_ladder(['chrome131', 'chrome124', 'safari17_0', 'firefox133'],
-                                  site='aibooru')
+                                  site='e6ai')
 
 
-class AIBooruError(Exception):
+class E6AIError(Exception):
     """Raised when no session can be established."""
 
 
-def get_aibooru_session(impersonate: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
-                        username: Optional[str] = None, api_key: Optional[str] = None):
+def get_e6ai_session(impersonate: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
+                     username: Optional[str] = None, api_key: Optional[str] = None):
     """
     Build a session that the site actually answers, verifying it before handing it back.
 
@@ -39,12 +40,12 @@ def get_aibooru_session(impersonate: Optional[str] = None, timeout: float = DEFA
     :type impersonate: Optional[str]
     :param timeout: Per-request timeout in seconds.
     :type timeout: float
-    :param username: Site login, sent as a query parameter when supplied.
+    :param username: Site login, sent as HTTP Basic auth when supplied.
     :type username: Optional[str]
     :param api_key: Matching API key.
     :type api_key: Optional[str]
     :returns: A session with a verified fingerprint.
-    :raises AIBooruError: When no fingerprint can get through.
+    :raises E6AIError: When no fingerprint can get through.
     """
     ladder = [impersonate] if impersonate else list(IMPERSONATE_LADDER)
     last = 'no fingerprint attempted'
@@ -57,7 +58,8 @@ def get_aibooru_session(impersonate: Optional[str] = None, timeout: float = DEFA
             logging.warning(f'Impersonation target {chosen!r} rejected by curl_cffi, skipping.')
             continue
         if username and api_key:
-            session.params = {'login': username, 'api_key': api_key}
+            token = base64.b64encode(f'{username}:{api_key}'.encode()).decode()
+            session.headers.update({'Authorization': f'Basic {token}'})
         # Both headers are what the prototype sent. They cost nothing and a site that has
         # decided to be suspicious of the caller may want them.
         session.headers.update({
@@ -71,14 +73,14 @@ def get_aibooru_session(impersonate: Optional[str] = None, timeout: float = DEFA
                 # challenge or a missing header, so it goes in the log rather than a bare code.
                 body = ' '.join(resp.text.split())[:240]
                 last = f'{chosen}: HTTP {resp.status_code} - {body!r}'
-                logging.warning(f'AIBooru session attempt failed - {last}.')
+                logging.warning(f'E6AI session attempt failed - {last}.')
                 continue
             resp.json()
         except Exception as err:
             last = f'{chosen}: {type(err).__name__}: {err}'
-            logging.warning(f'AIBooru session attempt failed - {last}.')
+            logging.warning(f'E6AI session attempt failed - {last}.')
             continue
-        logging.info(f'AIBooru session ready with fingerprint {chosen!r}'
+        logging.info(f'E6AI session ready with fingerprint {chosen!r}'
                      f'{" (authenticated)" if username and api_key else ""}.')
         return session
-    raise AIBooruError(f'Could not get a usable session; last attempt - {last}')
+    raise E6AIError(f'Could not get a usable session; last attempt - {last}')
