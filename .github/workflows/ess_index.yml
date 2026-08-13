@@ -23,10 +23,16 @@ on:
           the default since the returns past that are small.'
         required: false
         default: '6'
-  # Off until the rebuild sweep has landed and been audited. Runs must not overlap: a deploy
-  # rewrites table.parquet whole, so whichever finishes second replaces the other's work.
-  #  schedule:
-  #    - cron: '0 0 * * *'
+  # Twice a week. The site publishes about 570 images a week, the lowest rate of anything indexed
+  # here, so a run collects roughly 285 - fifteen pages of fetching plus the twenty spent
+  # confirming there is nothing older, well under a minute. The 225 MB table is rewritten whole on
+  # each deploy, which took 15-20 seconds during the rebuild, so neither fetching nor uploading
+  # argues for going more often at this rate.
+  #
+  # Runs must not overlap: a deploy rewrites table.parquet entire, so whichever finishes second
+  # replaces the other's work. Disable this block before dispatching a full sweep by hand.
+  schedule:
+    - cron: '53 10 * * 2,6'
 
 jobs:
   ess_index:
