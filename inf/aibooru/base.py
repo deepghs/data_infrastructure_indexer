@@ -89,7 +89,21 @@ def get_aibooru_session(impersonate: Optional[str] = None, timeout: float = DEFA
                 raise AIBooruError('Proxy pool is not usable from this host.')
         except BrightDataError as err:
             raise AIBooruError(f'Proxy pool unusable - {err}') from err
-    routed = with_session(proxy_pool, proxy_session) if proxy_session else proxy_pool
+    # A residential pool hands out a different exit per session id, so a few attempts may find
+    # one the site does not challenge. A datacentre pool fails identically every time - and that
+    # sameness is itself the answer about which kind of zone this is. One fingerprint per exit
+    # keeps the request count (and the bill) down while the exits are being sampled.
+    for attempt in range(_PROXY_EXIT_ATTEMPTS):
+        label = f'{proxy_session or "s"}x{attempt}'
+        routed = with_session(proxy_pool, label)
+        logging.info(f'Trying proxy exit {label!r} '
+                     f'({attempt + 1}/{_PROXY_EXIT_ATTEMPTS}), exit address '
+                     f'{_exit_address(routed, timeout)}.')
+        session = _walk_ladder(ladder[:1], timeout, username, api_key, routed)
+        if session is not None:
+            return session
+    # Every exit refused with one fingerprint; give the full ladder one last go on the last exit
+    # in case the fingerprint rather than the address was the problem.
     session = _walk_ladder(ladder, timeout, username, api_key, routed)
     if session is not None:
         return session
@@ -99,6 +113,31 @@ def get_aibooru_session(impersonate: Optional[str] = None, timeout: float = DEFA
 
 #: Why the most recent route failed, for the error raised once every route is exhausted.
 _LAST_FAILURE = ['no fingerprint attempted']
+
+#: Proxy exits to sample before concluding the pool cannot reach the site. Each costs one request.
+_PROXY_EXIT_ATTEMPTS = 4
+
+
+def _exit_address(proxy: str, timeout: float) -> str:
+    """
+    The address the proxy is exiting from, for the log.
+
+    Knowing whether the exits differ between attempts is what distinguishes a rotating residential
+    pool from a fixed datacentre one, which decides whether retrying is worth anything at all.
+
+    :param proxy: Proxy URL to route through.
+    :type proxy: str
+    :param timeout: Per-request timeout in seconds.
+    :type timeout: float
+    :returns: The address, or a short reason it could not be read.
+    :rtype: str
+    """
+    try:
+        probe = cffi_requests.Session(impersonate='chrome131', timeout=timeout)
+        probe.proxies = {'http': proxy, 'https': proxy}
+        return probe.get('https://api.ipify.org').text.strip()[:40]
+    except Exception as err:
+        return f'unknown ({type(err).__name__})'
 
 
 def _walk_ladder(ladder, timeout, username, api_key, proxy):
