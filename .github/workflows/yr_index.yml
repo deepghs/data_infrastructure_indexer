@@ -4,8 +4,8 @@ name: Yande Index
 on:
   #  push:
   workflow_dispatch:
-  schedule:
-    - cron: '45 12 * * 2'
+  # schedule:
+  #   - cron: '45 12 * * 2'
 
 jobs:
   unittest:

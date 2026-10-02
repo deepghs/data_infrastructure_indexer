@@ -38,8 +38,8 @@ on:
   # A scheduled run supplies no inputs, so everything falls through to the `||` defaults below:
   # head-only walk, 10-page patience, 5h budget, no start id and no explicit id ranges. That is
   # the right shape for keeping up with new posts. Backfilling is a manual dispatch.
-  schedule:
-    - cron: '0 */12 * * *'
+  # schedule:
+  #   - cron: '0 */12 * * *'
 
 jobs:
   unittest:
