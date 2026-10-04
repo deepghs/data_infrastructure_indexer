@@ -24,8 +24,8 @@ on:
   # work - while giving a missed run a second chance before the backlog is worth noticing.
   # Going more often would mostly re-download the 265 MB table to add nothing, since
   # `--no-recent` holds back anything younger than 15 days anyway.
-  # schedule:
-  #   - cron: '0 8 * * 1,4'
+  schedule:
+    - cron: '0 8 * * 1,4'
 
 jobs:
   ap_index:

@@ -31,8 +31,8 @@ on:
   #
   # Runs must not overlap: a deploy rewrites table.parquet entire, so whichever finishes second
   # replaces the other's work. Disable this block before dispatching a full sweep by hand.
-  # schedule:
-  #   - cron: '53 10 * * 2,6'
+  schedule:
+    - cron: '53 10 * * 2,6'
 
 jobs:
   ess_index:

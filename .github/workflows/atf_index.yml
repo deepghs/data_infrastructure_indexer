@@ -32,8 +32,8 @@ on:
   #
   # Runs must not overlap. There is no merge on deploy: whichever finishes second replaces the
   # other's table. Disable this block before dispatching a backfill by hand.
-  # schedule:
-  #   - cron: '17 6 * * 1,3,5'
+  schedule:
+    - cron: '17 6 * * 1,3,5'
 
 jobs:
   atf_index:

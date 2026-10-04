@@ -50,8 +50,8 @@ on:
   # runs; steady state is a few thousand new posts a day, which one run clears in minutes before
   # exiting on an empty candidate list. The cadence buys prompt recovery from a failed run, not
   # throughput.
-  # schedule:
-  #   - cron: '17 */8 * * *'
+  schedule:
+    - cron: '17 */8 * * *'
 
 jobs:
   quick_dl:
