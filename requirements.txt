@@ -21,7 +21,10 @@ markdownify<1
 xmltodict
 tzlocal
 pixivpy3>=3.7.5
-pyarrow
+# pyarrow 26 hard-requires NumPy 2 at import time without declaring it, while dghs-imgutils
+# and waifuc cap numpy<2, so pip resolves numpy 1.26 and the import fails. Drop this cap once
+# those packages allow NumPy 2.
+pyarrow<26
 cryptography
 pyyaml>=6
 ao3_api
