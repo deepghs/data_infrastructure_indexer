@@ -47,7 +47,9 @@ def generate_calendar_markdown(f, minx, url_function, last_month_count: int = 12
         print(f'', file=f)
         cal = calendar.monthcalendar(year, month)
 
-        df = pd.DataFrame(cal, columns=weekday_names)
+        # Object dtype, because the cells are overwritten with strings below and pandas 3 no
+        # longer upcasts an int64 column silently.
+        df = pd.DataFrame(cal, columns=weekday_names, dtype=object)
         for row in range(len(df)):
             for col in range(7):
                 day = df.iloc[row, col]
