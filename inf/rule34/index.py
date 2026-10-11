@@ -42,10 +42,9 @@ from pyrate_limiter import Rate, Duration, Limiter
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
 from inf.utils.session import srequest
-from .tags import _get_session, _LIMITER
+from .tags import __api_url__, _get_session, _LIMITER
 
 mimetypes.add_type('image/webp', '.webp')
-__site_url__ = 'https://rule34.xxx'
 
 #: Rows buffered as dicts before being folded into an Arrow chunk. A record here costs about
 #: 6.9 KB as a dict against a fraction of that in Arrow, so the buffer is kept small: at 20k
@@ -298,7 +297,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             params['user_id'] = user_id
             params['api_key'] = api_key
         _LIMITER.try_acquire('api limit')
-        resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
+        resp = srequest(session, 'GET', f'{__api_url__}/index.php', params=params)
         return resp.json()
 
     def _yield_from_newest():

@@ -21,6 +21,12 @@ from inf.utils.session import srequest
 
 __site_url__ = 'https://rule34.xxx'
 
+#: Host of the dapi endpoints. The main domain answers every path, including the dapi, with a
+#: Cloudflare managed challenge (403 with ``cf-mitigated: challenge``) that neither cloudscraper
+#: nor curl_cffi can pass, while this host serves the same query without one. The HTML pages that
+#: have no dapi equivalent, such as the tag alias list, still have to come from the main domain.
+__api_url__ = 'https://api.rule34.xxx'
+
 _RATE = Rate(55, int(math.ceil(Duration.SECOND * 60)))
 _LIMITER = Limiter(_RATE, max_delay=1 << 32)
 
@@ -45,7 +51,7 @@ def _get_tags_by_page(p: int, user_id: Optional[str] = None, api_key: Optional[s
         params['user_id'] = user_id
         params['api_key'] = api_key
     _LIMITER.try_acquire('api limit')
-    resp = srequest(session, 'GET', f'{__site_url__}/index.php', params=params)
+    resp = srequest(session, 'GET', f'{__api_url__}/index.php', params=params)
     resp.raise_for_status()
 
     json_data = xmltodict.parse(resp.text)
