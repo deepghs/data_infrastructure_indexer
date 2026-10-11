@@ -49,6 +49,17 @@ from .tag import _get_tag_info
 mimetypes.add_type('image/webp', '.webp')
 
 
+#: An item id in a listing. The listing used to carry bare integers and now quotes them
+#: (``"id": "4731118"``), so both spellings are accepted; a pattern that only knew the bare form
+#: matched nothing, and a run walked an empty listing and finished having collected no posts.
+_LISTING_ID = re.compile(r'"id":\s*"?(\d+)"?\s*,')
+
+
+def _listing_ids(text: str) -> List[int]:
+    """Return the post ids found in a listing body, in the order the site sent them."""
+    return [int(x) for x in _LISTING_ID.findall(text or '')]
+
+
 def loads_zerochan_json(text: str) -> dict:
     """
     Parse a zerochan JSON body, repairing the site's unescaped quotes.
@@ -385,7 +396,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
                 session, 'GET', 'https://www.zerochan.net/',
                 params=params
             )
-            ids = list(map(int, re.findall(r'"id":\s*(\d+)\s*,', resp.text)))
+            ids = _listing_ids(resp.text)
             has_new = False
             new_count = 0
             for id_ in ids:

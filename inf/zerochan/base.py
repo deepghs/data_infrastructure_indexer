@@ -59,6 +59,32 @@ _CHALLENGE_IMG = re.compile(r'<img\s+src="(?P<path>/[^"]+)"')
 #: Cookie the bot check sets once cleared.
 _BOTCHECK_COOKIE = 'xbotcheck'
 
+#: A listing payload: an object whose first key is ``items``. The site's own prefix is not
+#: well-formed (it opens with ``{ {``), so everything up to the first quoted key is skipped.
+_LISTING_BODY = re.compile(r'^\s*\{[^"]*"items"\s*:')
+
+
+def _accept_listing_500(response):
+    """
+    Repair the status of a listing response that carries a full payload but says ``500``.
+
+    Since 2026-10-08 the listing endpoint (``/?json=1`` and its ``o=`` paged variants) answers
+    HTTP 500 while still sending the complete listing. Single posts, tag pages and misses keep
+    their normal 200 and 404, and so does anything that is not a listing. The shared retry helper
+    treats every 5xx as transient, backing off for roughly 155 seconds per request before it
+    raises, so the status is corrected here, where the response enters, instead of in each
+    caller. A 500 whose body is not a listing payload, such as an HTML error page, is left alone.
+
+    :param response: A response from the session.
+    :returns: The same response, with ``status_code`` set to 200 when it is a mislabelled listing.
+    """
+    if response.status_code == 500 and _LISTING_BODY.match(response.text or ''):
+        response.status_code = 200
+        # curl_cffi computes ``ok`` once, when the response is built, and ``raise_for_status``
+        # reads that flag rather than the status, so it has to be repaired alongside it.
+        response.ok = True
+    return response
+
 
 class ZerochanFuckedUp(Exception):
     """Raised when the site cannot be coaxed into serving us."""
@@ -141,12 +167,12 @@ def get_zerochan_session(auth: Optional[Tuple[str, str]] = None,
             'sec-fetch-user': '?1',
         })
         try:
-            resp = session.get(f'{__site_url__}/?json=1')
+            resp = _accept_listing_500(session.get(f'{__site_url__}/?json=1'))
             if resp.status_code == 503:
                 if not _solve_bot_check(session, resp):
                     last = f'{chosen}: 503 with no challenge image in the body'
                     continue
-                resp = session.get(f'{__site_url__}/?json=1')
+                resp = _accept_listing_500(session.get(f'{__site_url__}/?json=1'))
             if resp.status_code != 200:
                 last = f'{chosen}: HTTP {resp.status_code} after the bot check'
                 logging.warning(f'Zerochan refused fingerprint {chosen!r} - {last}.')
@@ -186,12 +212,12 @@ class PacedSession:
         wait = self._next_at - time.time()
         if wait > 0:
             time.sleep(wait)
-        resp = self._session.request(method, url, **kwargs)
+        resp = _accept_listing_500(self._session.request(method, url, **kwargs))
         self._next_at = time.time() + self._min_interval
         if resp.status_code == 503 and _solve_bot_check(self._session, resp):
             self.rechecks += 1
             logging.info(f'Zerochan bot check re-cleared mid-run (#{self.rechecks}).')
-            resp = self._session.request(method, url, **kwargs)
+            resp = _accept_listing_500(self._session.request(method, url, **kwargs))
             self._next_at = time.time() + self._min_interval
         return resp
 

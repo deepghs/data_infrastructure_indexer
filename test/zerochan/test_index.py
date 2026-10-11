@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from inf.zerochan.index import (_prefix_ids, loads_zerochan_json, normalise_record,
+from inf.zerochan.index import (_listing_ids, _prefix_ids, loads_zerochan_json, normalise_record,
                                 parse_id_ranges)
 
 #: A real body zerochan served for post 1054049, trimmed to the shape that matters. The tag
@@ -97,6 +97,69 @@ class TestZerochanSessionPieces:
             paced.get('https://example.invalid/')
         gaps = [b - a for a, b in zip(fake.stamps, fake.stamps[1:])]
         assert all(g >= 0.19 for g in gaps), gaps
+
+
+#: The listing exactly as served: a malformed ``{ {`` opener, and ids quoted as strings.
+_LISTING = '{\r\n{\n    "items": [\n        {\n            "id": "4731118",\n            "tags": ["A"]\n        },\n        {\n            "id": "4731117",\n            "tags": []\n        }\n    ]\n}'
+
+
+def _Resp(status_code, text):
+    # A real curl_cffi response, because its ``ok`` flag is computed at construction and is what
+    # ``raise_for_status`` reads; a hand-rolled fake would not notice if only the status changed.
+    from curl_cffi.requests import Response
+    resp = Response()
+    resp.status_code = status_code
+    resp.ok = 200 <= status_code < 400
+    resp.content = text.encode('utf-8')
+    return resp
+
+
+@pytest.mark.unittest
+class TestListingIds:
+    def test_quoted_ids_are_found(self):
+        assert _listing_ids(_LISTING) == [4731118, 4731117]
+
+    def test_bare_ids_still_work(self):
+        assert _listing_ids('{"items": [{"id": 12, "w": 1}, {"id": 7, "w": 2}]}') == [12, 7]
+
+    def test_empty_or_missing_body(self):
+        assert _listing_ids('') == []
+        assert _listing_ids(None) == []
+
+
+@pytest.mark.unittest
+class TestListingStatusRepair:
+    def test_listing_labelled_500_is_accepted(self):
+        from inf.zerochan.base import _accept_listing_500
+        resp = _accept_listing_500(_Resp(500, _LISTING))
+        assert resp.status_code == 200
+        resp.raise_for_status()
+
+    def test_html_error_page_stays_500(self):
+        from inf.zerochan.base import _accept_listing_500
+        resp = _accept_listing_500(_Resp(500, '<html><body>"items": oops</body></html>'))
+        assert resp.status_code == 500
+        with pytest.raises(Exception):
+            resp.raise_for_status()
+
+    def test_json_error_without_items_stays_500(self):
+        from inf.zerochan.base import _accept_listing_500
+        assert _accept_listing_500(_Resp(500, '{"error": "boom"}')).status_code == 500
+
+    def test_other_statuses_are_untouched(self):
+        from inf.zerochan.base import _accept_listing_500
+        for code in (200, 404, 503):
+            assert _accept_listing_500(_Resp(code, _LISTING)).status_code == code
+
+    def test_paced_session_repairs_the_status(self):
+        from inf.zerochan.base import PacedSession
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                return _Resp(500, _LISTING)
+
+        paced = PacedSession(FakeSession(), min_interval=0)
+        assert paced.get('https://example.invalid/', params={'json': '1'}).status_code == 200
 
 
 @pytest.mark.unittest
