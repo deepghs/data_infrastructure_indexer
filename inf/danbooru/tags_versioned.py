@@ -18,7 +18,6 @@ from hfutils.operate import get_hf_client, get_hf_fs
 from hfutils.utils import number_to_tag
 from huggingface_hub import hf_hub_url
 from tqdm import tqdm
-from waifuc.source import DanbooruSource
 
 from inf.utils.safe import safe_upload_directory_as_directory
 from inf.utils.session import srequest
@@ -96,6 +95,11 @@ def sync(repository: str, site_username: Optional[str] = None, site_apikey: Opti
             f'datasets/{repository}/.gitattributes',
             os.linesep.join(attr_lines),
         )
+
+    # Imported here rather than at module level: waifuc pulls in imgutils, which installs
+    # onnxruntime with pip on first import. Doing that while the module is merely imported breaks
+    # anything that only needs the calendar helper, such as parallel test collection.
+    from waifuc.source import DanbooruSource
 
     if site_apikey and site_username:
         logging.info(f'Initializing session with username {site_username!r} and api_key {site_apikey!r} ...')

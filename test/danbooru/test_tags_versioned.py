@@ -1,4 +1,6 @@
+import importlib
 import io
+import sys
 
 import pytest
 
@@ -24,3 +26,11 @@ class TestGenerateCalendarMarkdown:
         text = buf.getvalue()
         assert '](' not in text
         assert ' 1 ' in text
+
+    def test_importing_the_module_does_not_load_waifuc(self):
+        # waifuc installs onnxruntime with pip on first import, which races when several test
+        # workers import it at once, so the module must only load it when a sync actually runs.
+        sys.modules.pop('inf.danbooru.tags_versioned', None)
+        sys.modules.pop('waifuc', None)
+        importlib.import_module('inf.danbooru.tags_versioned')
+        assert 'waifuc' not in sys.modules
