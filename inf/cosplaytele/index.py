@@ -240,8 +240,8 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span
                     repo_type='dataset',
                     local_directory=td,
                     path_in_repo='.',
-                    message=f'Add {plural_word(added, "post")}, on '
-                            f'{time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime())}',
+                    # The upload helper appends ", on <time>" itself, matching the published history.
+                    message=f'Add {plural_word(added, "post")}',
                     hf_token=os.environ['HF_TOKEN'],
                 )
         state['has_update'] = False
