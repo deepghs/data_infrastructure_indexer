@@ -11,14 +11,13 @@ import time
 from typing import Dict, List, Optional
 from urllib.parse import quote_plus, urljoin
 
-import cloudscraper
 import dateparser
 from ditk import logging
 from hbutils.system import urlsplit
 from pyquery import PyQuery as pq
 from requests import HTTPError
 
-from inf.utils.session import get_requests_session, get_random_ua, srequest
+from inf.utils.session import get_cloudscraper_session, srequest
 
 __site_url__ = 'https://asiaon.top'
 
@@ -52,8 +51,7 @@ def parse_size(text: str) -> Optional[float]:
 
 def get_asiaon_session():
     for _ in range(_SESSION_ATTEMPTS):
-        session = cloudscraper.session(get_requests_session(timeout=30, max_retries=3))
-        session.headers['User-Agent'] = get_random_ua()
+        session = get_cloudscraper_session()
         logging.info(f'Try getting session, with UA: {session.headers["User-Agent"]!r} ...')
         resp = session.head(f'{__site_url__}/')
         if resp.status_code != 403:

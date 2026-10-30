@@ -4,10 +4,9 @@ import time
 from collections import deque
 from typing import Callable, Optional
 
-import cloudscraper
 from ditk import logging
 
-from inf.utils.session import get_requests_session, get_random_ua
+from inf.utils.session import get_cloudscraper_session
 
 
 class DownloadError(Exception):
@@ -23,11 +22,9 @@ class DownloadError(Exception):
         self.retryable = retryable
 
 
-def get_download_session(timeout: int = 60, max_retries: int = 3):
-    """Build a cloudscraper session on top of the retrying requests session."""
-    session = cloudscraper.session(get_requests_session(timeout=timeout, max_retries=max_retries))
-    session.headers['User-Agent'] = get_random_ua()
-    return session
+def get_download_session(timeout=(15, 60)):
+    """A cloudscraper session whose requests time out, see :func:`inf.utils.session.get_cloudscraper_session`."""
+    return get_cloudscraper_session(timeout=timeout)
 
 
 #: Archive types the unpacker is willing to be handed. The remote name decides the extension, and

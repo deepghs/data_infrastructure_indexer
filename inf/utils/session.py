@@ -118,6 +118,34 @@ def get_requests_session(max_retries: int = 5, timeout: int = DEFAULT_TIMEOUT, v
     return session
 
 
+def get_cloudscraper_session(timeout=(15, 60), headers: Optional[Dict[str, str]] = None):
+    """
+    Returns a cloudscraper session whose requests carry a timeout.
+
+    ``cloudscraper.session(sess)`` copies the headers and cookies of ``sess`` but not its mounted
+    adapters, and its own adapter has neither a timeout nor retries. A session built as
+    ``cloudscraper.session(get_requests_session(timeout=30))`` therefore looks like it has a timeout
+    and has none: one connection that goes quiet blocks the caller until the remote end gives up,
+    which was measured at sixteen minutes. The timeout is applied here on the request instead.
+
+    :param timeout: A ``requests`` timeout, seconds or a ``(connect, read)`` pair. (default: (15, 60))
+    :param headers: Additional headers to be added to the session. (default: None)
+    :returns: A cloudscraper session. An explicit ``timeout`` passed to a request still wins.
+    """
+    import cloudscraper
+
+    scraper = cloudscraper.create_scraper()
+    scraper.headers.update({'User-Agent': get_random_ua(), **dict(headers or {})})
+    request = scraper.request
+
+    def _request(method, url, *args, **kwargs):
+        kwargs.setdefault('timeout', timeout)
+        return request(method, url, *args, **kwargs)
+
+    scraper.request = _request
+    return scraper
+
+
 def srequest(session: Union[requests.Session, List[requests.Session]], method, url, *, max_retries: int = 5,
              sleep_time: float = 5.0, raise_for_status: bool = True, **kwargs) -> requests.Response:
     """
