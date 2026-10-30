@@ -17,6 +17,11 @@ on:
   # a handful of listing pages plus the ten spent confirming nothing older is missing. The tables
   # are rewritten whole on each deploy, so two runs must never overlap - whichever uploads second
   # replaces the other's work. Do not dispatch a manual run while a scheduled one is in flight.
+  # The scheduled run is incremental, like the weekly pyskeb job it replaces: it reads the listing from the
+  # newest page and stops after ten pages in a row with nothing new, so a day with nothing new costs about a
+  # minute. A scheduled run takes no inputs and so always gets those defaults. A walk of the whole listing
+  # (max_empty_pages 0) exists only as a manual input, to find posts an earlier index missed; do not make it
+  # the routine mode, it takes hours.
   schedule:
     - cron: '25 3 * * *'
 
