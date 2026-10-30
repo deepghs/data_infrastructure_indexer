@@ -38,6 +38,22 @@ _SIGNATURES = {
 _LISTED_TYPES = {'rar': {'Rar', 'Rar5'}, '7z': {'7z'}}
 
 
+#: Characters that must not appear anywhere in a listing except as the ``\\n`` ending a line. Python's
+#: ``str.splitlines`` also breaks on most of these, so a name holding one would be read as several
+#: lines here while the extractor sees one name - the gap this list closes. The listing is split on
+#: ``\\n`` alone, and anything else in this set is refused outright.
+_LISTING_FORBIDDEN = re.compile('[\\x00-\\x09\\x0b-\\x1f\\x7f\\x85\\u2028\\u2029]')
+
+#: The ``7z l -slt`` member fields this check understands. An unknown field is refused, so a name
+#: cannot pass as a harmless extra field and a new 7z field is noticed instead of ignored.
+_KNOWN_FIELDS = {
+    'Path', 'Folder', 'Size', 'Packed Size', 'Modified', 'Created', 'Accessed', 'Attributes',
+    'Encrypted', 'Comment', 'CRC', 'Method', 'Characteristics', 'Host OS', 'Version',
+    'Volume Index', 'Offset', 'Symbolic Link', 'Hard Link', 'Block', 'Solid', 'Position',
+    'Link', 'Checksum', 'Code Page', 'Big Endian', 'Reparse', 'Archive', 'Warnings', 'Errors',
+}
+
+
 class ArchiveUnsafe(Exception):
     """The archive holds something that must not be unpacked or republished."""
 
@@ -72,19 +88,22 @@ def _parse_fields(block: str) -> Dict[str, str]:
     Read ``Key = Value`` lines, refusing anything else.
 
     A member name may contain a newline, which would fake extra lines in the listing. Every line
-    must therefore be a well-formed field and no key may repeat, so a name cannot smuggle in a
-    second ``Path`` or hide a ``Symbolic Link`` marker.
+    must therefore be a well-formed field with a known key and no key may repeat, so a name cannot
+    smuggle in a second ``Path`` or hide a ``Symbolic Link`` marker.
     """
     fields = {}
-    for line in block.splitlines():
+    for line in block.split('\n'):
         if not line.strip():
             continue
         key, sep, value = line.partition(' = ')
-        if not sep or not key.strip():
+        key = key.strip()
+        if not sep or not key:
             raise ArchiveUnsafe(f'Malformed line in archive listing: {line[:80]!r}.')
-        if key.strip() in fields:
-            raise ArchiveUnsafe(f'Repeated field {key.strip()!r} in archive listing.')
-        fields[key.strip()] = value.strip()
+        if key not in _KNOWN_FIELDS:
+            raise ArchiveUnsafe(f'Unknown field {key!r} in archive listing.')
+        if key in fields:
+            raise ArchiveUnsafe(f'Repeated field {key!r} in archive listing.')
+        fields[key] = value.strip()
     return fields
 
 
@@ -94,17 +113,20 @@ def parse_7z_listing(text: str) -> Tuple[Dict[str, str], List[Dict]]:
 
     :raises ArchiveUnsafe: On any block that is not a well-formed member, rather than skipping it.
     """
-    parts = re.split(r'^-{10,}\s*$', text, maxsplit=1, flags=re.M)
+    forbidden = _LISTING_FORBIDDEN.search(text)
+    if forbidden:
+        raise ArchiveUnsafe(f'Control character {forbidden.group()!r} in archive listing.')
+    parts = re.split(r'^-{10,}[ \t]*$', text, maxsplit=1, flags=re.M)
     if len(parts) < 2:
         return {}, []
     header = {}
-    for line in parts[0].splitlines():
+    for line in parts[0].split('\n'):
         key, sep, value = line.partition(' = ')
         if sep:
             header[key.strip()] = value.strip()
 
     entries = []
-    for block in re.split(r'\n\s*\n', parts[1].strip('\n')):
+    for block in re.split(r'\n[ \t]*\n', parts[1].strip('\n')):
         if not block.strip():
             continue
         fields = _parse_fields(block)
@@ -134,7 +156,11 @@ def _list_with_7z(archive_file: str, password: Optional[str]) -> Tuple[Dict[str,
     if password:
         cmd.append(f'-p{password}')
     cmd.append(archive_file)
-    proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='strict',
+                              stdin=subprocess.DEVNULL, timeout=600)
+    except UnicodeDecodeError as err:
+        raise ArchiveUnsafe('Archive listing is not valid UTF-8.') from err
     if proc.returncode != 0:
         raise ArchiveUnsafe(f'Could not list archive (7z exit {proc.returncode}): {proc.stderr.strip()[:200]!r}')
     return parse_7z_listing(proc.stdout)

@@ -218,3 +218,42 @@ class TestSignatureAndTool:
         (tmp_path / 'tree' / 'a\nb.jpg').write_bytes(b'x')
         with pytest.raises(sf.ArchiveUnsafe, match='Control character'):
             sf.validate_tree(str(tmp_path / 'tree'))
+
+
+@pytest.mark.unittest
+class TestListingDifferential:
+    """Names the listing parser and the extractor could read differently."""
+
+    @pytest.mark.parametrize('char', ['\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\x85', ' ', ' ', '\r'])
+    def test_line_breaking_characters_in_a_name_are_refused(self, char):
+        # str.splitlines() would cut this name in two and read "X = ../../a" as an innocent extra field,
+        # while the extractor sees a single name with ".." directory components.
+        evil = LISTING.replace('Path = Post/Pic/1.jpg', f'Path = ok.jpg{char}X = ../../a')
+        with pytest.raises(sf.ArchiveUnsafe, match='Control character'):
+            sf.parse_7z_listing(evil)
+
+    def test_a_tab_or_form_feed_free_listing_still_parses(self):
+        header, entries = sf.parse_7z_listing(LISTING)
+        assert len(entries) == 3 and header['Type'] == 'Rar5'
+
+    def test_unknown_field_is_refused(self):
+        evil = LISTING.replace('Size = 3', 'Size = 3\nSomething New = 1', 1)
+        with pytest.raises(sf.ArchiveUnsafe, match="Unknown field 'Something New'"):
+            sf.parse_7z_listing(evil)
+
+    def test_newline_name_cannot_smuggle_a_known_field_either(self):
+        evil = LISTING.replace('Path = Post/Pic/1.jpg', 'Path = ok.jpg\nAttributes = A -rw-r--r--')
+        with pytest.raises(sf.ArchiveUnsafe, match='Repeated field|Malformed'):
+            sf.parse_7z_listing(evil)
+
+    def test_invalid_utf8_listing_is_a_refusal_not_a_crash(self, tmp_path, monkeypatch):
+        f = tmp_path / 'a.rar'
+        f.write_bytes(b'Rar!\x1a\x07\x01\x00' + b'\x00' * 8)
+        monkeypatch.setattr(sf.shutil, 'which', lambda name: '/usr/bin/7z')
+
+        def boom(*a, **k):
+            raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
+
+        monkeypatch.setattr(sf.subprocess, 'run', boom)
+        with pytest.raises(sf.ArchiveUnsafe, match='UTF-8'):
+            sf.check_archive_members(str(f), None)
