@@ -1,0 +1,83 @@
+"""Shared pieces for the download hosts that cosplaytele posts link to."""
+import os
+import re
+import time
+from collections import deque
+from typing import Callable, Optional
+
+import cloudscraper
+from ditk import logging
+
+from inf.utils.session import get_requests_session, get_random_ua
+
+
+class DownloadError(Exception):
+    """A package could not be fetched from a host, so the next host in the order is tried."""
+
+
+def get_download_session(timeout: int = 60, max_retries: int = 3):
+    """Build a cloudscraper session on top of the retrying requests session."""
+    session = cloudscraper.session(get_requests_session(timeout=timeout, max_retries=max_retries))
+    session.headers['User-Agent'] = get_random_ua()
+    return session
+
+
+def safe_local_name(remote_name: str, default: str = 'package') -> str:
+    """
+    A local file name for a remote one.
+
+    Remote names are only ever used for display; the archive is stored under a fixed stem so a
+    hostile or odd name cannot reach outside the download directory. The extension is kept
+    because the RAR tooling decides what to do from it.
+    """
+    _, ext = os.path.splitext(os.path.basename(remote_name or ''))
+    ext = re.sub(r'[^0-9A-Za-z]', '', ext)[:8].lower()
+    return f'{default}.{ext}' if ext else default
+
+
+#: A transfer averaging less than this over ``_STALL_WINDOW`` is abandoned, since at that speed a
+#: multi-gigabyte package would not finish inside the run.
+_MIN_SPEED = 1 * 1024 ** 2
+_STALL_WINDOW = 5 * 60
+
+
+def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
+                   chunk_size: int = 1 << 20, clock: Callable[[], float] = time.time) -> int:
+    """
+    Write a streaming response to ``dst_file`` and return the bytes written.
+
+    The transfer is abandoned when the average speed over the last five minutes falls below
+    1 MiB/s, and a body that ends short of ``Content-Length`` is an error rather than a
+    truncated archive passed on to the unpacker.
+    """
+    if expected_size is None and response.headers.get('Content-Length'):
+        expected_size = int(response.headers['Content-Length'])
+
+    window = deque()  # (timestamp, size) of chunks inside the stall window
+    window_bytes, written = 0, 0
+    os.makedirs(os.path.dirname(dst_file) or '.', exist_ok=True)
+    try:
+        with open(dst_file, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                written += len(chunk)
+                now = clock()
+                window.append((now, len(chunk)))
+                window_bytes += len(chunk)
+                while window and window[0][0] < now - _STALL_WINDOW:
+                    window_bytes -= window.popleft()[1]
+                if window and now - window[0][0] >= _STALL_WINDOW * 0.99 and window_bytes / _STALL_WINDOW < _MIN_SPEED:
+                    raise DownloadError(f'Too slow, {window_bytes / _STALL_WINDOW / 1024:.0f} KiB/s over '
+                                        f'{_STALL_WINDOW}s, abandoned.')
+        if expected_size is not None and written != expected_size:
+            raise DownloadError(f'Incomplete download, got {written} of {expected_size} bytes.')
+    except Exception:
+        if os.path.exists(dst_file):
+            os.remove(dst_file)
+        raise
+    finally:
+        response.close()
+    logging.info(f'Downloaded {written} bytes to {os.path.basename(dst_file)!r}.')
+    return written

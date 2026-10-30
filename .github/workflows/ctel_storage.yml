@@ -1,0 +1,101 @@
+#file: noinspection YAMLSchemaValidation
+name: Cosplaytele Storage
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_time_limit:
+        description: 'Stop starting new posts after this duration. The package in flight still has
+          to finish and upload, so leave room under the 350 minute job limit.'
+        required: false
+        default: '5h'
+      max_posts:
+        description: 'Store at most this many posts. Empty means no limit.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Download, unpack and repack, but upload nothing.'
+        required: false
+        default: 'false'
+  # Once a day, six hours after the index job (03:25 UTC), so the index has long since finished and
+  # published by the time this reads it. Steady state is one or two posts a day. After a long gap
+  # the backlog is worked off newest first across as many daily runs as it takes; a manual dispatch
+  # can speed that up. Runs never overlap: the concurrency group below queues a second one behind
+  # the first, because each commit rewrites the whole set of tables from a snapshot read at start.
+  schedule:
+    - cron: '25 9 * * *'
+
+concurrency:
+  group: ctel-storage
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ctel_storage:
+    name: Cosplaytele Storage
+    runs-on: ${{ matrix.os }}
+    # GitHub hard-kills a job at 360 minutes. New posts stop being started at 5h, which leaves
+    # time for the largest package seen (about 7 GB) to download, unpack, repack and upload.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - 'ubuntu-latest'
+        python-version:
+          - '3.11'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          persist-credentials: false
+      - name: Set up system dependencies on Linux
+        shell: bash
+        run: |
+          sudo apt-get update
+          # The packages are RAR archives; unrar is the tool rarfile drives, 7z is the fallback.
+          sudo apt-get install -y unrar p7zip-full || sudo apt-get install -y p7zip-full
+          which unrar 7z || true
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Test the basic environment
+        shell: bash
+        run: |
+          python -V
+          pip --version
+          df -h /
+          free -h
+      - name: Run cosplaytele storage
+        env:
+          CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_ENABLE_HF_TRANSFER: '1'
+          REMOTE_REPOSITORY_CTEL: ${{ secrets.REMOTE_REPOSITORY_CTEL }}
+          REMOTE_REPOSITORY_CTEL_S1: ${{ secrets.REMOTE_REPOSITORY_CTEL_S1 }}
+          MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
+          MAX_POSTS: ${{ github.event.inputs.max_posts || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        shell: bash
+        run: |
+          EXTRA=()
+          if [ -n "$MAX_POSTS" ]; then
+            EXTRA+=(--max-posts "$MAX_POSTS")
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            EXTRA+=(--dry-run)
+          fi
+          python -m inf.cosplaytele.storage \
+            --max-time-limit "$MAX_TIME_LIMIT" \
+            "${EXTRA[@]}"

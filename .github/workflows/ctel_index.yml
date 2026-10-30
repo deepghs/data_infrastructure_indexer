@@ -20,6 +20,13 @@ on:
   schedule:
     - cron: '25 3 * * *'
 
+concurrency:
+  group: ctel-index
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   ctel_index:
     name: Cosplaytele Index

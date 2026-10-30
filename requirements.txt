@@ -49,3 +49,5 @@ google-re2<1.1.20250722
 pyrate-limiter<4
 # Needed by the zerochan job, whose upstream serves malformed JSON.
 json_repair>=0.62
+# Fronts the sorafolder share pages and downloads; previously only present through waifuc.
+cloudscraper
