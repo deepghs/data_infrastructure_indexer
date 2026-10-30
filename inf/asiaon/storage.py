@@ -281,7 +281,11 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
                 # not touched here: on success they are what goes into the package.
                 if archive_file and os.path.exists(archive_file):
                     os.remove(archive_file)
-        kind = 'gone' if isinstance(verdict, DownloadError) and verdict.gone else 'fault'
+        if isinstance(verdict, DownloadError) and verdict.blocked:
+            # The host is refusing this run as a whole, which says nothing about the post: it is not a fault.
+            kind = 'skipped'
+        else:
+            kind = 'gone' if isinstance(verdict, DownloadError) and verdict.gone else 'fault'
         if kind == 'gone' and gone_hosts is not None:
             gone_hosts[host.name] = {'kind': verdict.kind, 'reason': str(verdict)[:300]}
         outcomes.append((host.name, kind, f'{host.name}: {verdict!r}'))

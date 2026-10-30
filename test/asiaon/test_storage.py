@@ -829,7 +829,7 @@ class TestBlockedHost:
 
         monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
         world.setup(list(range(1, 13)), [])
-        world.run(workers=1, max_consecutive_failures=3)
+        world.run(workers=1, max_consecutive_failures=1)
         # asked once for the first post, never again; nothing counted as a failure, nothing stored
         assert len(asked) == 1
         assert not package_commits(world)
