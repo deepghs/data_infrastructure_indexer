@@ -119,7 +119,8 @@ def _write_readme(file: str, df_posts: pd.DataFrame, df_tags: pd.DataFrame, df_c
 
 
 def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span: float = 5 * 60,
-         max_empty_pages: int = 10, dry_run: bool = False, max_posts: Optional[int] = None):
+         max_empty_pages: int = 10, dry_run: bool = False, max_posts: Optional[int] = None,
+         start_page: int = 1):
     start_time = time.time()
     delete_detached_cache()
 
@@ -186,12 +187,16 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span
         state['last_deploy'] = time.time()
         state['last_count'] = len(d_posts)
 
+    progress = {'page': start_page}
+
     def _iter_new_posts():
-        page_id, empty_pages = 1, 0
+        page_id, empty_pages = start_page, 0
         while not _timeout():
+            progress['page'] = page_id
             items = client.get_lst_page(page_id)
             if not items:
                 logging.info(f'Page {page_id} is past the end of the listing.')
+                progress['page'] = None
                 return
             has_new_item = False
             for item in items:
@@ -201,6 +206,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span
             empty_pages = 0 if has_new_item else empty_pages + 1
             if max_empty_pages and empty_pages >= max_empty_pages:
                 logging.info(f'{plural_word(empty_pages, "page")} in a row with nothing new, stopping.')
+                progress['page'] = None
                 return
             page_id += 1
 
@@ -232,6 +238,12 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span
 
     _deploy(force=True)
     logging.info(f'Done, {plural_word(fetched, "post")} added, {plural_word(len(d_posts), "post")} in the index.')
+    if progress['page'] is not None:
+        # The walk was cut short, so older posts may still be missing. A new run starting from page 1
+        # would find the pages above this one already stored, take them for the end of the new posts
+        # and stop, never reaching the gap, so it has to be told where to pick up.
+        logging.warning(f'Stopped before the walk finished, at listing page {progress["page"]}. '
+                        f'To continue, run again with --start-page {progress["page"]}.')
 
 
 @click.command()
@@ -246,12 +258,15 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span
 @click.option('-E', '--max-empty-pages', type=int, default=10, show_default=True,
               help='Stop after this many consecutive listing pages with nothing new. 0 walks the '
                    'whole listing.')
+@click.option('-P', '--start-page', type=int, envvar='START_PAGE', default=1, show_default=True,
+              help='First listing page to read. A run cut short by its time limit reports the page to '
+                   'resume from; without this a later run would stop at the stored pages above the gap.')
 @click.option('-n', '--max-posts', type=int, default=None,
               help='Fetch at most this many new posts, for trial runs.')
 @click.option('--dry-run', is_flag=True, default=False,
               help='Fetch and build the tables but upload nothing.')
 def cli(repository: str, max_time_limit: Optional[float], deploy_span: float,
-        max_empty_pages: int, max_posts: Optional[int], dry_run: bool):
+        max_empty_pages: int, start_page: int, max_posts: Optional[int], dry_run: bool):
     """Sync the asiaon index."""
     logging.try_init_root(logging.INFO)
     sync(
@@ -261,6 +276,7 @@ def cli(repository: str, max_time_limit: Optional[float], deploy_span: float,
         max_empty_pages=max_empty_pages,
         dry_run=dry_run,
         max_posts=max_posts,
+        start_page=start_page,
     )
 
 

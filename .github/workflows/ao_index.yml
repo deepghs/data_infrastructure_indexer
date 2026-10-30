@@ -13,6 +13,11 @@ on:
           whole listing, which is how a full rebuild is done.'
         required: false
         default: '10'
+      start_page:
+        description: 'First listing page to read. A run cut short by its time limit logs the page to
+          resume from; a later run started at page 1 would stop at the stored pages above the gap.'
+        required: false
+        default: '1'
       max_posts:
         description: 'Fetch at most this many new posts. Empty means no limit.'
         required: false
@@ -73,6 +78,7 @@ jobs:
           REMOTE_REPOSITORY_AO: ${{ secrets.REMOTE_REPOSITORY_AO }}
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '10' }}
+          START_PAGE: ${{ github.event.inputs.start_page || '1' }}
           MAX_POSTS: ${{ github.event.inputs.max_posts || '' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         shell: bash
@@ -87,4 +93,5 @@ jobs:
           python -m inf.asiaon.index \
             --max-time-limit "$MAX_TIME_LIMIT" \
             --max-empty-pages "$MAX_EMPTY_PAGES" \
+            --start-page "$START_PAGE" \
             "${EXTRA[@]}"

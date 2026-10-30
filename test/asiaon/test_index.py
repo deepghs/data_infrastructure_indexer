@@ -223,3 +223,34 @@ class TestSync:
     def test_dry_run_uploads_nothing(self, tmp_path, monkeypatch):
         uploads, _ = self._run(tmp_path, monkeypatch, [1, 2], [1, 2, 3], dry_run=True)
         assert uploads == []
+
+
+@pytest.mark.unittest
+class TestStartPage:
+    def _run(self, tmp_path, monkeypatch, **kwargs):
+        stored = list(range(1, 41))
+        # newest first: dbids 61..51 unstored, then 40..1 stored (the gap sits above the stored stretch)
+        listed = list(range(41, 61)) + stored
+        return TestSync()._run(tmp_path, monkeypatch, stored, listed, **kwargs)
+
+    def test_a_run_from_page_one_that_meets_stored_pages_never_reaches_older_gaps(self, tmp_path, monkeypatch):
+        # Pages 1-10 hold 41..60 and are new; the gap below it is walked only because the walk goes on
+        # until it has seen max_empty_pages empty ones.
+        uploads, fake = self._run(tmp_path, monkeypatch, max_empty_pages=3)
+        assert len(pd.read_parquet(uploads[-1][1] / 'posts.parquet')) == 60 and fake.pages_asked[0] == 1
+
+    def test_start_page_skips_ahead_to_where_the_last_run_stopped(self, tmp_path, monkeypatch):
+        uploads, fake = self._run(tmp_path, monkeypatch, max_empty_pages=3, start_page=6)
+        assert fake.pages_asked[0] == 6
+        posts = pd.read_parquet(uploads[-1][1] / 'posts.parquet')
+        assert len(posts) == 50  # pages 6-10 hold the ten oldest unstored posts, 41..50
+
+
+@pytest.mark.unittest
+def test_a_run_cut_short_says_where_to_resume(tmp_path, monkeypatch, caplog):
+    import logging as std_logging
+    caplog.set_level(std_logging.WARNING)
+    seen = []
+    monkeypatch.setattr(ix.logging, 'warning', lambda msg, *a, **k: seen.append(msg))
+    TestSync()._run(tmp_path, monkeypatch, [1, 2], [1, 2, 3, 4, 5, 6, 7, 8], max_empty_pages=2, max_posts=2)
+    assert any('--start-page' in m for m in seen)
