@@ -157,7 +157,7 @@ class TestMega:
         assert mega.decrypt_name('not base64 at all!', aes_key) is None
 
     @pytest.mark.parametrize('code, gone, blocked', [
-        (-9, True, False), (-16, True, False), (-17, False, True), (-6, False, False),
+        (-9, True, False), (-16, True, False), (-17, False, True), (-6, False, True), (-4, False, True), (-7, False, False),
     ])
     def test_api_error_codes(self, monkeypatch, code, gone, blocked):
         class R:

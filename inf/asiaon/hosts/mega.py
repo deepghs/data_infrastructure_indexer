@@ -30,6 +30,9 @@ _GONE_CODES = {-9, -16, -11, -8, -2}
 _GONE_KINDS = {-9: 'deleted', -2: 'deleted', -16: 'takedown', -11: 'private', -8: 'expired'}
 _EOVERQUOTA = -17
 _EAGAIN = -3
+#: Answers that mean this client is asking too fast or too often, not that the link is bad: -3 try again,
+#: -4 rate limit, -6 too many requests for the resource.
+_BUSY = {-3, -4, -6}
 
 
 def b64url_decode(text: str) -> bytes:
@@ -93,8 +96,8 @@ def _ask_api(handle: str) -> dict:
                                     kind=_GONE_KINDS.get(answer, 'deleted'))
             if answer == _EOVERQUOTA:
                 raise DownloadError('mega: transfer quota exceeded', blocked=True)
-            raise DownloadError(f'mega: the API answered error {answer}', retryable=answer == _EAGAIN,
-                                blocked=answer == _EAGAIN)
+            raise DownloadError(f'mega: the API answered error {answer}', retryable=answer in _BUSY,
+                                blocked=answer in _BUSY)
         return answer
     raise AssertionError('Unreachable code reached in _ask_api.')
 
