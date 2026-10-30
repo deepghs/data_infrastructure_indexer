@@ -833,3 +833,15 @@ class TestBlockedHost:
         # asked once for the first post, never again; nothing counted as a failure, nothing stored
         assert len(asked) == 1
         assert not package_commits(world)
+
+
+@pytest.mark.unittest
+class TestLinksNoHostCanTake:
+    def test_a_shortener_in_the_mega_column_is_not_a_failure(self, world, monkeypatch):
+        from inf.asiaon.hosts import HOSTS as real_hosts
+        mega = [h for h in real_hosts if h.name == 'mega'][0]
+        monkeypatch.setattr(st, 'HOSTS', [Host('mega', world.good_host('mega'), mega.accepts)])
+        extra = {d: {'mega_download_url': 'https://tui.click/abc'} for d in range(1, 13)}
+        world.setup(list(range(1, 13)), [], extra=extra)
+        world.run(workers=1, max_consecutive_failures=1)
+        assert not package_commits(world)

@@ -217,7 +217,7 @@ def is_known_gone(record: Optional[Dict], host_name: str, url: str) -> bool:
 def usable_url(host, post: Dict) -> Optional[str]:
     url = _to_none(post.get(host.column))
     # Some old records hold the site's own data-API address where a download link should be.
-    if not url or '_next/data' in url:
+    if not url or '_next/data' in url or not host.accepts(url):
         return None
     return url
 

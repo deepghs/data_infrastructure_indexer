@@ -20,13 +20,16 @@ from .base import DownloadError
 from .gofile import download_gofile
 from .googledrive import download_googledrive
 from .mediafire import download_mediafire
-from .mega import download_mega
+from .mega import download_mega, parse_link as parse_mega_link
 from .pixeldrain import download_pixeldrain
 
 
 class Host(NamedTuple):
     name: str
     download: Callable[[str, str], str]
+    #: Whether a link in this host's column is one the downloader can take. Index columns also hold
+    #: link shorteners and folder links, which are not a verdict on the post and are left alone.
+    accepts: Callable[[str], bool] = lambda url: True
 
     @property
     def column(self) -> str:
@@ -38,7 +41,7 @@ HOSTS: List[Host] = [
     Host('pixeldrain', download_pixeldrain),
     Host('gofile', download_gofile),
     Host('googledrive', download_googledrive),
-    Host('mega', download_mega),
+    Host('mega', download_mega, lambda url: parse_mega_link(url) is not None),
 ]
 
 __all__ = ['DownloadError', 'Host', 'HOSTS']
