@@ -5,6 +5,7 @@ import pytest
 
 _WORKFLOW_ENTRYPOINT_MODULES = [
     'inf.asiaon.index',
+    'inf.asiaon.storage',
     'inf.cosplaytele.index',
     'inf.cosplaytele.storage',
     'inf.atfbooru.index',
