@@ -190,6 +190,15 @@ class TestSync:
         world.run(dry_run=True)
         assert world.backend == [{'timeout': 300}]
 
+    def test_posts_can_be_limited_by_creation_date(self, world):
+        world.setup([1, 2, 3, 4, 5, 6], [])
+        world.run(created_before=5.0, created_after=2.0)  # created_at is the dbid in these fixtures
+        assert sorted(c[1][-1] for c in world.calls) == ['2', '3', '4']
+
+    def test_the_cli_turns_a_date_into_a_utc_timestamp(self):
+        from datetime import datetime
+        assert st._epoch(datetime(2026, 5, 16)) == 1778889600.0 and st._epoch(None) is None
+
     def test_max_posts_counts_attempts(self, world):
         world.setup([1, 2, 3, 4], [])
         world.run(max_posts=2)

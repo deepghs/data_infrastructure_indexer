@@ -18,6 +18,15 @@ on:
           is what a one-off sweep of the old posts wants.'
         required: false
         default: '200'
+      created_before:
+        description: 'Only posts created before this date, YYYY-MM-DD (UTC). Empty means no limit. The old
+          posts are the ones whose links are still dying, so they can be swept ahead of the new ones.'
+        required: false
+        default: ''
+      created_after:
+        description: 'Only posts created on or after this date, YYYY-MM-DD (UTC). Empty means no limit.'
+        required: false
+        default: ''
       dry_run:
         description: 'Download, unpack and repack, but upload nothing.'
         required: false
@@ -96,12 +105,20 @@ jobs:
           MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
           MAX_POSTS: ${{ github.event.inputs.max_posts || '' }}
           MAX_DEAD_STREAK: ${{ github.event.inputs.max_dead_streak || '200' }}
+          CREATED_BEFORE: ${{ github.event.inputs.created_before || '' }}
+          CREATED_AFTER: ${{ github.event.inputs.created_after || '' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         shell: bash
         run: |
           EXTRA=()
           if [ -n "$MAX_POSTS" ]; then
             EXTRA+=(--max-posts "$MAX_POSTS")
+          fi
+          if [ -n "$CREATED_BEFORE" ]; then
+            EXTRA+=(--created-before "$CREATED_BEFORE")
+          fi
+          if [ -n "$CREATED_AFTER" ]; then
+            EXTRA+=(--created-after "$CREATED_AFTER")
           fi
           if [ "$DRY_RUN" = "true" ]; then
             EXTRA+=(--dry-run)

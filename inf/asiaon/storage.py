@@ -53,6 +53,7 @@ import subprocess
 import tempfile
 import time
 from collections import deque
+from datetime import timezone
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -404,7 +405,8 @@ def _count_terms(live: Dict[str, Dict], pending: Dict[str, Dict], origin: Dict[s
 def sync(index_repository: str, repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
          deploy_span: float = 5 * 60, max_batch_bytes: int = _MAX_BATCH_BYTES, max_posts: Optional[int] = None,
          dry_run: bool = False, max_consecutive_failures: int = _MAX_CONSECUTIVE_FAILURES,
-         max_dead_streak: int = _MAX_DEAD_STREAK, workers: int = 1):
+         max_dead_streak: int = _MAX_DEAD_STREAK, workers: int = 1, created_before: Optional[float] = None,
+         created_after: Optional[float] = None):
     start_time = time.time()
     delete_detached_cache()
     # Without a timeout a stalled hub request blocks for about sixteen minutes, which is how a run was lost once.
@@ -438,7 +440,9 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
 
     candidates = df_index.sort_values(by=['created_at', 'dbid'], ascending=[False, False]).to_dict('records')
     candidates = [r for r in candidates
-                  if r['id'] not in exist_post_ids and any(usable_url(h, r) for h in HOSTS)]
+                  if r['id'] not in exist_post_ids and any(usable_url(h, r) for h in HOSTS)
+                  and (created_before is None or r['created_at'] < created_before)
+                  and (created_after is None or r['created_at'] >= created_after)]
     other = len(df_index) - len(exist_post_ids & set(df_index['id'])) - len(candidates)
     logging.info(f'{plural_word(len(candidates), "post")} to try from {[h.name for h in HOSTS]!r}; '
                  f'{plural_word(other, "other post")} not stored and not fetchable here.')
@@ -599,6 +603,10 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
         logging.warning('Failed posts stay out of storage and are tried again on the next run.')
 
 
+def _epoch(day) -> Optional[float]:
+    return day.replace(tzinfo=timezone.utc).timestamp() if day is not None else None
+
+
 @click.command()
 @click.option('-i', '--index-repository', type=str, envvar='REMOTE_REPOSITORY_AO',
               default='deepghs/asiaon_index', show_default=True, help='Index dataset repository to read posts from.')
@@ -616,12 +624,18 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
               help='Attempt at most this many posts, stored, gone or failed, for trial runs.')
 @click.option('-w', '--workers', type=int, default=3, show_default=True,
               help='Posts downloaded, unpacked and repacked at the same time.')
+@click.option('--created-before', type=click.DateTime(formats=['%Y-%m-%d']), default=None,
+              help='Only posts created before this date (UTC). A sweep of the old posts, whose links are the ones '
+                   'still dying, can be run ahead of the new ones this way.')
+@click.option('--created-after', type=click.DateTime(formats=['%Y-%m-%d']), default=None,
+              help='Only posts created on or after this date (UTC).')
 @click.option('--max-dead-streak', type=int, default=_MAX_DEAD_STREAK, show_default=True,
               help='Stop after this many posts in a row with nothing alive. 0 walks every candidate, which is '
                    'what a one-off sweep of the old posts wants.')
 @click.option('--dry-run', is_flag=True, default=False, help='Download, unpack and repack, but upload nothing.')
 def cli(index_repository: str, repository: str, max_time_limit: Optional[float], deploy_span: float,
-        max_batch_gib: float, max_posts: Optional[int], workers: int, max_dead_streak: int, dry_run: bool):
+        max_batch_gib: float, max_posts: Optional[int], workers: int, created_before, created_after,
+        max_dead_streak: int, dry_run: bool):
     """Store asiaon post packages."""
     logging.try_init_root(logging.INFO)
     sync(
@@ -633,6 +647,8 @@ def cli(index_repository: str, repository: str, max_time_limit: Optional[float],
         max_posts=max_posts,
         max_dead_streak=max_dead_streak,
         workers=workers,
+        created_before=_epoch(created_before),
+        created_after=_epoch(created_after),
         dry_run=dry_run,
     )
 
