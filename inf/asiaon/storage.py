@@ -98,6 +98,14 @@ class PackageFailed(Exception):
     """The package could not be fetched or unpacked for a reason that may not last."""
 
 
+class PackageDeferred(Exception):
+    """
+    Nothing could be said about the package this run: the hosts that were asked say it is gone, or were
+    not asked at all because they are refusing the run, so a host that might still have it was skipped.
+    It is neither a fault nor a dead link, and it is simply tried again next run.
+    """
+
+
 class UnpackError(Exception):
     """The downloaded archive could not be turned into a usable directory of files."""
 
@@ -182,13 +190,13 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str],
     :raises PackageUnavailable: When no host has a live link for this post.
     :raises PackageFailed: When a host had one and the package still could not be had.
     """
-    failures, gone = [], 0
+    outcomes: List[Tuple[str, str, str]] = []  # (host, 'gone' | 'fault' | 'skipped', text)
     for host in HOSTS:
         url = usable_url(host, post)
         if not url:
             continue
         if host.name in disabled:
-            failures.append(f'{host.name}: skipped, refusing this run')
+            outcomes.append((host.name, 'skipped', f'{host.name}: skipped, refusing this run'))
             continue
 
         download_dir = os.path.join(work_dir, 'download', host.name)
@@ -225,16 +233,18 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str],
                 # not touched here: on success they are what goes into the package.
                 if archive_file and os.path.exists(archive_file):
                     os.remove(archive_file)
-        if isinstance(verdict, DownloadError) and verdict.gone:
-            gone += 1
-        failures.append(f'{host.name}: {verdict!r}')
+        kind = 'gone' if isinstance(verdict, DownloadError) and verdict.gone else 'fault'
+        outcomes.append((host.name, kind, f'{host.name}: {verdict!r}'))
 
-    attempted = len(failures)
-    if attempted == 0:
+    text = '; '.join(item[2] for item in outcomes)
+    asked = [item for item in outcomes if item[1] != 'skipped']
+    skipped = len(outcomes) - len(asked)
+    if not outcomes:
         raise PackageUnavailable('no link on a host this job can fetch')
-    if gone == attempted:
-        raise PackageUnavailable('; '.join(failures))
-    raise PackageFailed('; '.join(failures))
+    if all(item[1] == 'gone' for item in asked):
+        # Every host that was asked says it is gone. If another was not asked, that one may still have it.
+        raise (PackageDeferred(text) if skipped else PackageUnavailable(text))
+    raise PackageFailed(text)
 
 
 def build_package(post_id: str, unpack_dir: str, batch_dir: str) -> Tuple[str, int, int, List[str]]:
@@ -453,7 +463,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
     pending_tags: Dict[str, Dict] = {}
     pending_categories: Dict[str, Dict] = {}
     disabled: Set[str] = set()
-    counts = {'stored': 0, 'failed': 0, 'unavailable': 0}
+    counts = {'stored': 0, 'failed': 0, 'unavailable': 0, 'deferred': 0}
     failed_ids: List[str] = []
 
     strikes: Dict[str, int] = {}
@@ -522,7 +532,8 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                         continue
                     submitted += 1
                     logging.info(f'Post {post["id"]!r} (attempt {submitted}, {counts["stored"]} stored, '
-                                 f'{counts["unavailable"]} gone, {counts["failed"]} failed) ...')
+                                 f'{counts["unavailable"]} gone, {counts["deferred"]} deferred, '
+                                 f'{counts["failed"]} failed) ...')
                     inflight.append((post, pool.submit(process_post, post, staging_root, disabled, strikes)))
 
         def _abandon():
@@ -537,6 +548,10 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             post, future = inflight.popleft()
             try:
                 result = future.result()
+            except PackageDeferred as err:
+                logging.warning(f'Post {post["id"]!r} left for the next run - {err}')
+                counts['deferred'] += 1
+                continue
             except PackageUnavailable as err:
                 logging.warning(f'Post {post["id"]!r} is gone - {err}')
                 counts['unavailable'] += 1
@@ -597,7 +612,8 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
         _deploy(force=True)
 
     logging.info(f'Done: {plural_word(counts["stored"], "post")} stored, {plural_word(counts["unavailable"], "post")} '
-                 f'gone, {plural_word(counts["failed"], "post")} failed {failed_ids[:20]!r}, '
+                 f'gone, {plural_word(counts["deferred"], "post")} deferred, '
+                 f'{plural_word(counts["failed"], "post")} failed {failed_ids[:20]!r}, '
                  f'{plural_word(len(exist_post_ids), "post")} in storage.')
     if failed_ids:
         logging.warning('Failed posts stay out of storage and are tried again on the next run.')

@@ -268,6 +268,45 @@ class TestFailureHandling:
         self._hosts(monkeypatch, Host('mediafire', host))
         world.run(max_consecutive_failures=3)  # two failures between successes never reach three
 
+    def test_posts_left_without_an_answer_by_a_host_that_is_set_aside_are_deferred_not_failed(self, world, monkeypatch):
+        # The incident: gofile answers 429 and is set aside; afterwards every post whose pixeldrain link is dead
+        # and whose gofile link was skipped used to count as a fault, and ten in a row ended the run.
+        def gofile(url, out):
+            raise DownloadError('rate limited', blocked=True)
+
+        def pixeldrain(url, out):
+            raise DownloadError('file does not exist', gone=True)
+
+        world.setup(list(range(1, 16)), [])
+        world.tables[('idx', 'posts.parquet')] = pd.DataFrame([
+            index_row(d, mediafire_download_url=None, download_urls={}, pixeldrain_download_url=f'https://pd/{d}',
+                      gofile_download_url=f'https://gf/{d}') for d in range(1, 16)])
+        self._hosts(monkeypatch, Host('pixeldrain', pixeldrain), Host('gofile', gofile))
+        world.run(max_consecutive_failures=3, max_dead_streak=0)  # raised before the fix
+        assert world.uploads == []
+
+    def test_a_post_every_asked_host_says_is_gone_is_a_dead_link_when_nothing_was_skipped(self, world, monkeypatch):
+        def gone(url, out):
+            raise DownloadError('deleted', gone=True)
+
+        world.setup([1, 2, 3], [])
+        world.tables[('idx', 'posts.parquet')] = pd.DataFrame([
+            index_row(d, pixeldrain_download_url=f'https://pd/{d}') for d in (1, 2, 3)])
+        self._hosts(monkeypatch, Host('mediafire', gone), Host('pixeldrain', gone))
+        with pytest.raises(st.PackageUnavailable):
+            st.fetch_package(index_row(1, pixeldrain_download_url='https://pd/1'), 'unused', set())
+
+    def test_one_fault_among_dead_links_is_still_a_fault(self, world, monkeypatch):
+        def gone(url, out):
+            raise DownloadError('deleted', gone=True)
+
+        def broken(url, out):
+            raise DownloadError('a challenge page')
+
+        self._hosts(monkeypatch, Host('mediafire', broken), Host('pixeldrain', gone))
+        with pytest.raises(st.PackageFailed):
+            st.fetch_package(index_row(1, pixeldrain_download_url='https://pd/1'), 'unused', set())
+
     def test_a_host_that_is_throttling_is_not_asked_again_this_run(self, world, monkeypatch):
         asked = []
 
