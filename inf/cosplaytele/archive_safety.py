@@ -16,13 +16,26 @@ import shutil
 import stat
 import subprocess
 import zipfile
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from ditk import logging
 
 #: Unix file-type characters of ``ls -l`` that are not a regular file or directory.
 _SPECIAL_TYPES = 'lbcps'
 _UNIX_MODE = re.compile(r'(?:^|\s)([-dlbcps])[rwxsStT-]{9}(?:\s|$)')
+
+
+#: What each accepted extension must begin with, at offset 0. The listing tool and the extractor are
+#: different programs that each decide what an archive is; requiring the signature up front stops a
+#: polyglot, a self-extracting header or an embedded archive from being read one way by the check
+#: and another way by the extractor.
+_SIGNATURES = {
+    'rar': (b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01\x00'),
+    '7z': (b'7z\xbc\xaf\x27\x1c',),
+    'zip': (b'PK\x03\x04', b'PK\x05\x06'),
+}
+
+#: The ``Type`` 7z reports for each extension.
+_LISTED_TYPES = {'rar': {'Rar', 'Rar5'}, '7z': {'7z'}}
 
 
 class ArchiveUnsafe(Exception):
@@ -31,8 +44,8 @@ class ArchiveUnsafe(Exception):
 
 def path_problem(path: str) -> Optional[str]:
     """Why a member path is unacceptable, or ``None``."""
-    if not path or '\x00' in path:
-        return 'empty or NUL path'
+    if not path or any(ord(c) < 32 or ord(c) == 127 for c in path):
+        return 'empty path or control character in path'
     norm = path.replace('\\', '/')
     if norm.startswith('/') or re.match(r'^[A-Za-z]:', norm):
         return 'absolute path'
@@ -54,27 +67,56 @@ def entry_problem(entry: Dict) -> Optional[str]:
     return None
 
 
-def parse_7z_listing(text: str) -> List[Dict]:
-    """Parse ``7z l -slt`` output into one dict per archive member."""
+def _parse_fields(block: str) -> Dict[str, str]:
+    """
+    Read ``Key = Value`` lines, refusing anything else.
+
+    A member name may contain a newline, which would fake extra lines in the listing. Every line
+    must therefore be a well-formed field and no key may repeat, so a name cannot smuggle in a
+    second ``Path`` or hide a ``Symbolic Link`` marker.
+    """
+    fields = {}
+    for line in block.splitlines():
+        if not line.strip():
+            continue
+        key, sep, value = line.partition(' = ')
+        if not sep or not key.strip():
+            raise ArchiveUnsafe(f'Malformed line in archive listing: {line[:80]!r}.')
+        if key.strip() in fields:
+            raise ArchiveUnsafe(f'Repeated field {key.strip()!r} in archive listing.')
+        fields[key.strip()] = value.strip()
+    return fields
+
+
+def parse_7z_listing(text: str) -> Tuple[Dict[str, str], List[Dict]]:
+    """
+    Parse ``7z l -slt`` output into the archive's header fields and one dict per member.
+
+    :raises ArchiveUnsafe: On any block that is not a well-formed member, rather than skipping it.
+    """
     parts = re.split(r'^-{10,}\s*$', text, maxsplit=1, flags=re.M)
     if len(parts) < 2:
-        return []
+        return {}, []
+    header = {}
+    for line in parts[0].splitlines():
+        key, sep, value = line.partition(' = ')
+        if sep:
+            header[key.strip()] = value.strip()
+
     entries = []
     for block in re.split(r'\n\s*\n', parts[1].strip('\n')):
-        fields = {}
-        for line in block.splitlines():
-            key, sep, value = line.partition(' = ')
-            if sep:
-                fields[key.strip()] = value.strip()
-        if 'Path' not in fields:
+        if not block.strip():
             continue
+        fields = _parse_fields(block)
+        if 'Path' not in fields:
+            raise ArchiveUnsafe('Archive listing has a member block without a path.')
         entries.append({
             'path': fields['Path'],
             'attributes': fields.get('Attributes', ''),
             'symlink': bool(fields.get('Symbolic Link')),
             'hardlink': bool(fields.get('Hard Link')),
         })
-    return entries
+    return header, entries
 
 
 def _list_zip(archive_file: str) -> List[Dict]:
@@ -87,7 +129,7 @@ def _list_zip(archive_file: str) -> List[Dict]:
     return entries
 
 
-def _list_with_7z(archive_file: str, password: Optional[str]) -> List[Dict]:
+def _list_with_7z(archive_file: str, password: Optional[str]) -> Tuple[Dict[str, str], List[Dict]]:
     cmd = ['7z', 'l', '-slt', '-y']
     if password:
         cmd.append(f'-p{password}')
@@ -98,23 +140,39 @@ def _list_with_7z(archive_file: str, password: Optional[str]) -> List[Dict]:
     return parse_7z_listing(proc.stdout)
 
 
+def check_signature(archive_file: str, extension: str) -> None:
+    """Require the file to start with the signature its extension promises."""
+    signatures = _SIGNATURES.get(extension)
+    if not signatures:
+        raise ArchiveUnsafe(f'Unsupported archive extension {extension!r}.')
+    with open(archive_file, 'rb') as f:
+        head = f.read(16)
+    if not any(head.startswith(sig) for sig in signatures):
+        raise ArchiveUnsafe(f'File does not start with a {extension} signature.')
+
+
 def check_archive_members(archive_file: str, password: Optional[str]) -> int:
     """
     Refuse the archive if any member is unsafe, before anything is extracted.
 
     :returns: The number of members listed.
-    :raises ArchiveUnsafe: On an unsafe member, an unreadable listing or an empty one.
+    :raises ArchiveUnsafe: On an unsafe member, a mismatched format, an unreadable or empty listing,
+        or a missing listing tool - the check never passes by not running.
     """
-    if archive_file.lower().endswith('.zip'):
+    extension = os.path.splitext(archive_file)[1].lstrip('.').lower()
+    check_signature(archive_file, extension)
+
+    if extension == 'zip':
         try:
             entries = _list_zip(archive_file)
         except zipfile.BadZipFile as err:
             raise ArchiveUnsafe(f'Not a readable zip: {err!r}') from err
-    elif shutil.which('7z'):
-        entries = _list_with_7z(archive_file, password)
     else:
-        logging.warning('7z is not installed, so the member list could not be checked before extraction.')
-        return -1
+        if not shutil.which('7z'):
+            raise ArchiveUnsafe('7z is not installed, so the member list cannot be checked.')
+        header, entries = _list_with_7z(archive_file, password)
+        if header.get('Type') not in _LISTED_TYPES[extension]:
+            raise ArchiveUnsafe(f'Archive is a {header.get("Type")!r}, not the {extension} its name claims.')
 
     if not entries:
         raise ArchiveUnsafe('Archive listing is empty or could not be parsed.')
@@ -141,6 +199,8 @@ def validate_tree(directory: str) -> int:
         for name in [*dirnames, *filenames]:
             path = os.path.join(dirpath, name)
             rel = os.path.relpath(path, directory)
+            if any(ord(c) < 32 or ord(c) == 127 for c in name):
+                raise ArchiveUnsafe(f'Control character in unpacked name: {rel!r}.')
             mode = os.lstat(path)
             if stat.S_ISLNK(mode.st_mode):
                 raise ArchiveUnsafe(f'Symlink in unpacked archive: {rel!r}.')

@@ -44,7 +44,8 @@ class TestMemberChecks:
         assert sf.path_problem(path) is None
 
     def test_parse_7z_listing(self):
-        entries = sf.parse_7z_listing(LISTING)
+        header, entries = sf.parse_7z_listing(LISTING)
+        assert header['Type'] == 'Rar5'
         assert [e['path'] for e in entries] == ['Post/Pic/1.jpg', 'Post/Pic', 'Post/link']
         assert sf.entry_problem(entries[0]) is None and sf.entry_problem(entries[1]) is None
         assert sf.entry_problem(entries[2]) == 'link'
@@ -54,7 +55,24 @@ class TestMemberChecks:
         assert sf.entry_problem({'path': 'a', 'attributes': 'A'}) is None  # DOS-style attributes only
 
     def test_unparseable_listing_yields_nothing(self):
-        assert sf.parse_7z_listing('7z: Cannot open file') == []
+        assert sf.parse_7z_listing('7z: Cannot open file') == ({}, [])
+
+    def test_a_block_without_a_path_is_refused_not_skipped(self):
+        text = LISTING + "\nFolder = -\nSize = 9\n"
+        with pytest.raises(sf.ArchiveUnsafe, match='without a path'):
+            sf.parse_7z_listing(text)
+
+    def test_newline_in_a_name_cannot_fake_fields(self):
+        # a member named "a\nPath = ok.jpg" would otherwise read as two Path lines, or as a clean entry
+        injected = LISTING.replace('Path = Post/Pic/1.jpg', 'Path = x\nPath = ok.jpg')
+        with pytest.raises(sf.ArchiveUnsafe, match='Repeated field'):
+            sf.parse_7z_listing(injected)
+        stray = LISTING.replace('Path = Post/Pic/1.jpg', 'Path = x\nSymbolic Link')
+        with pytest.raises(sf.ArchiveUnsafe, match='Malformed line'):
+            sf.parse_7z_listing(stray)
+
+    def test_control_characters_in_paths_are_refused(self):
+        assert sf.path_problem('a\nb.jpg') and sf.path_problem('a\x00b') and sf.path_problem('a\x1bb')
 
 
 def _zip(path, members):
@@ -144,3 +162,59 @@ class TestUnpackPackageIsSafe:
         with pytest.raises(st.UnpackError, match='unsafe'):
             st.unpack_package(str(tmp_path / 'a.zip'), str(out), None)
         assert not (tmp_path / 'sub' / 'escape.txt').exists() and not any(out.iterdir())
+
+
+@pytest.mark.unittest
+class TestSignatureAndTool:
+    RAR5 = b'Rar!\x1a\x07\x01\x00' + b'\x00' * 32
+
+    def test_signature_must_be_at_offset_zero(self, tmp_path):
+        good, bad = tmp_path / 'g.rar', tmp_path / 'b.rar'
+        good.write_bytes(self.RAR5)
+        bad.write_bytes(b'MZ stub' + self.RAR5)  # an SFX-style header in front of a real archive
+        sf.check_signature(str(good), 'rar')
+        with pytest.raises(sf.ArchiveUnsafe, match='signature'):
+            sf.check_signature(str(bad), 'rar')
+
+    def test_extension_and_content_must_agree(self, tmp_path):
+        z = tmp_path / 'a.rar'
+        _zip(tmp_path / 'real.zip', ['P/1.jpg'])
+        z.write_bytes((tmp_path / 'real.zip').read_bytes())  # a zip wearing a .rar name
+        with pytest.raises(sf.ArchiveUnsafe, match='signature'):
+            sf.check_archive_members(str(z), None)
+
+    def test_unknown_extension_is_refused(self, tmp_path):
+        f = tmp_path / 'a.sh'
+        f.write_bytes(self.RAR5)
+        with pytest.raises(sf.ArchiveUnsafe, match='Unsupported'):
+            sf.check_signature(str(f), 'sh')
+
+    def test_missing_7z_fails_closed(self, tmp_path, monkeypatch):
+        f = tmp_path / 'a.rar'
+        f.write_bytes(self.RAR5)
+        monkeypatch.setattr(sf.shutil, 'which', lambda name: None)
+        with pytest.raises(sf.ArchiveUnsafe, match='7z is not installed'):
+            sf.check_archive_members(str(f), None)
+
+    def test_reported_type_must_match_the_extension(self, tmp_path, monkeypatch):
+        f = tmp_path / 'a.rar'
+        f.write_bytes(self.RAR5)
+        monkeypatch.setattr(sf.shutil, 'which', lambda name: '/usr/bin/7z')
+        listing = LISTING.replace('Type = Rar5', 'Type = zip')
+        monkeypatch.setattr(sf, '_list_with_7z', lambda *a: sf.parse_7z_listing(listing))
+        with pytest.raises(sf.ArchiveUnsafe, match="not the rar"):
+            sf.check_archive_members(str(f), None)
+
+    def test_clean_rar_listing_is_accepted(self, tmp_path, monkeypatch):
+        f = tmp_path / 'a.rar'
+        f.write_bytes(self.RAR5)
+        clean = LISTING.split('Path = Post/link')[0]
+        monkeypatch.setattr(sf.shutil, 'which', lambda name: '/usr/bin/7z')
+        monkeypatch.setattr(sf, '_list_with_7z', lambda *a: sf.parse_7z_listing(clean))
+        assert sf.check_archive_members(str(f), None) == 2
+
+    def test_control_character_in_an_unpacked_name_is_refused(self, tmp_path):
+        (tmp_path / 'tree').mkdir()
+        (tmp_path / 'tree' / 'a\nb.jpg').write_bytes(b'x')
+        with pytest.raises(sf.ArchiveUnsafe, match='Control character'):
+            sf.validate_tree(str(tmp_path / 'tree'))
