@@ -267,6 +267,30 @@ class TestSync:
         files = pd.read_parquet(uploads[-1][1] / 'files.parquet')
         assert sorted(files['id']) == [7, 8, 9]  # no ids burnt on the failed post
 
+    def test_a_long_run_of_failures_aborts_instead_of_downloading_everything(self, tmp_path, monkeypatch):
+        rows = self._rows()
+        base_row = rows[1]
+        rows += [{**base_row, 'id': f'p-bad{i}', 'sorafolder_download_url': f'https://s/b{i:02d}',
+                  'created_at': 100.0 + i} for i in range(5)]
+        bad = {f'https://s/b{i:02d}' for i in range(5)}
+        with pytest.raises(RuntimeError, match='3 posts in a row failed'):
+            self._run(tmp_path, monkeypatch, rows, fail_ids=bad, max_consecutive_failures=3)
+
+    def test_a_success_resets_the_failure_streak(self, tmp_path, monkeypatch):
+        rows = self._rows()
+        base_row = rows[1]
+        rows += [{**base_row, 'id': 'p-bad-a', 'sorafolder_download_url': 'https://s/ba1', 'created_at': 100.0},
+                 {**base_row, 'id': 'p-bad-b', 'sorafolder_download_url': 'https://s/bb1', 'created_at': 10.0}]
+        # newest first: bad-a, new1, new2, bad-b -> never more than one failure in a row
+        uploads = self._run(tmp_path, monkeypatch, rows, fail_ids={'https://s/ba1', 'https://s/bb1'},
+                            max_consecutive_failures=2)
+        assert len(uploads) == 2
+
+    def test_max_posts_counts_failed_attempts_too(self, tmp_path, monkeypatch):
+        rows = self._rows()
+        uploads = self._run(tmp_path, monkeypatch, rows, fail_ids={'https://s/n01'}, max_posts=1)
+        assert uploads == []  # the one attempt allowed was spent on the failing post
+
     def test_max_posts_and_dry_run(self, tmp_path, monkeypatch):
         assert len(self._run(tmp_path, monkeypatch, self._rows(), max_posts=1)) == 1
         assert self._run(tmp_path, monkeypatch, self._rows(), dry_run=True) is not None

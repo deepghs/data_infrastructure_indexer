@@ -238,8 +238,20 @@ class TestListingDifferential:
 
     def test_unknown_field_is_refused(self):
         evil = LISTING.replace('Size = 3', 'Size = 3\nSomething New = 1', 1)
-        with pytest.raises(sf.ArchiveUnsafe, match="Unknown field 'Something New'"):
+        with pytest.raises(sf.ArchiveUnsafe, match="Something New"):
             sf.parse_7z_listing(evil)
+
+    def test_every_unknown_field_is_reported_at_once(self):
+        evil = LISTING.replace('Size = 3', 'Size = 3\nNew One = 1\nNew Two = 2', 1)
+        with pytest.raises(sf.ArchiveUnsafe) as exc:
+            sf.parse_7z_listing(evil)
+        assert 'New One' in str(exc.value) and 'New Two' in str(exc.value)
+
+    def test_ntfs_alternate_stream_field_is_understood(self):
+        # 7z reports this for RAR members carrying an NTFS alternate data stream
+        listing = LISTING.replace('Size = 3', 'Size = 3\nAlternate Stream = -', 1)
+        _, entries = sf.parse_7z_listing(listing)
+        assert [e['path'] for e in entries][0] == 'Post/Pic/1.jpg'
 
     def test_newline_name_cannot_smuggle_a_known_field_either(self):
         evil = LISTING.replace('Path = Post/Pic/1.jpg', 'Path = ok.jpg\nAttributes = A -rw-r--r--')

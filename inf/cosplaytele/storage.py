@@ -57,6 +57,13 @@ mimetypes.add_type('image/webp', '.webp')
 _SQUASH_THRESHOLD = 300
 
 
+#: Posts in a row that may fail before the run gives up. A single post can fail for its own reasons,
+#: such as a removed share, but a long unbroken run of failures means something systematic - a
+#: rotated link key, a changed page, a check rejecting everything - and carrying on would download
+#: gigabytes per post for nothing until the time budget ran out.
+_MAX_CONSECUTIVE_FAILURES = 10
+
+
 class UnpackError(Exception):
     """The downloaded archive could not be turned into a usable directory of files."""
 
@@ -215,7 +222,8 @@ def _squash_if_needed(hf_client, repository: str):
 
 
 def sync(index_repository: str, repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
-         hf_upload_interval: float = 30.0, max_posts: Optional[int] = None, dry_run: bool = False):
+         hf_upload_interval: float = 30.0, max_posts: Optional[int] = None, dry_run: bool = False,
+         max_consecutive_failures: int = _MAX_CONSECUTIVE_FAILURES):
     start_time = time.time()
     delete_detached_cache()
     upload_limiter = Limiter(Rate(1, int(math.ceil(Duration.SECOND * hf_upload_interval))), max_delay=1 << 32)
@@ -248,12 +256,12 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                  f'{plural_word(max(unsupported, 0), "other post")} not stored and not fetchable here.')
 
     session = get_download_session()
-    stored, failed = 0, []
+    stored, failed, streak = 0, [], 0
     for post in candidates:
         if max_time_limit is not None and start_time + max_time_limit < time.time():
             logging.info('Time budget used up, stopping.')
             break
-        if max_posts is not None and stored >= max_posts:
+        if max_posts is not None and stored + len(failed) >= max_posts:
             break
 
         logging.info(f'Post {post["id"]!r} ({stored + len(failed) + 1}/{len(candidates)}) ...')
@@ -266,7 +274,12 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             except Exception as err:
                 logging.error(f'Post {post["id"]!r} not stored - {err!r}')
                 failed.append(post['id'])
+                streak += 1
+                if streak >= max_consecutive_failures:
+                    raise RuntimeError(f'{streak} posts in a row failed, giving up: {failed[-streak:]!r}. '
+                                       f'Last error: {err!r}') from err
                 continue
+            streak = 0
 
             # Everything this post adds is worked out on copies and only merged once the commit lands.
             new_files, file_ids, next_id = [], [], max_file_id
@@ -337,7 +350,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
 @click.option('-u', '--upload-interval', type=float, default=30.0, show_default=True,
               help='Minimum seconds between commits.')
 @click.option('-n', '--max-posts', type=int, default=None,
-              help='Store at most this many posts, for trial runs.')
+              help='Attempt at most this many posts, stored or failed, for trial runs.')
 @click.option('--dry-run', is_flag=True, default=False,
               help='Download, unpack and repack, but upload nothing.')
 def cli(index_repository: str, repository: str, max_time_limit: Optional[float], upload_interval: float,

@@ -51,6 +51,7 @@ _KNOWN_FIELDS = {
     'Encrypted', 'Comment', 'CRC', 'Method', 'Characteristics', 'Host OS', 'Version',
     'Volume Index', 'Offset', 'Symbolic Link', 'Hard Link', 'Block', 'Solid', 'Position',
     'Link', 'Checksum', 'Code Page', 'Big Endian', 'Reparse', 'Archive', 'Warnings', 'Errors',
+    'Alternate Stream',
 }
 
 
@@ -83,13 +84,15 @@ def entry_problem(entry: Dict) -> Optional[str]:
     return None
 
 
-def _parse_fields(block: str) -> Dict[str, str]:
+def _parse_fields(block: str, unknown: set) -> Dict[str, str]:
     """
     Read ``Key = Value`` lines, refusing anything else.
 
     A member name may contain a newline, which would fake extra lines in the listing. Every line
-    must therefore be a well-formed field with a known key and no key may repeat, so a name cannot
-    smuggle in a second ``Path`` or hide a ``Symbolic Link`` marker.
+    must therefore be a well-formed field and no key may repeat, so a name cannot smuggle in a
+    second ``Path`` or hide a ``Symbolic Link`` marker. Keys this check does not know are collected
+    into ``unknown`` rather than raised one at a time, so a listing that uses several new fields is
+    reported whole.
     """
     fields = {}
     for line in block.split('\n'):
@@ -100,7 +103,7 @@ def _parse_fields(block: str) -> Dict[str, str]:
         if not sep or not key:
             raise ArchiveUnsafe(f'Malformed line in archive listing: {line[:80]!r}.')
         if key not in _KNOWN_FIELDS:
-            raise ArchiveUnsafe(f'Unknown field {key!r} in archive listing.')
+            unknown.add(key)
         if key in fields:
             raise ArchiveUnsafe(f'Repeated field {key!r} in archive listing.')
         fields[key] = value.strip()
@@ -125,11 +128,11 @@ def parse_7z_listing(text: str) -> Tuple[Dict[str, str], List[Dict]]:
         if sep:
             header[key.strip()] = value.strip()
 
-    entries = []
+    entries, unknown = [], set()
     for block in re.split(r'\n[ \t]*\n', parts[1].strip('\n')):
         if not block.strip():
             continue
-        fields = _parse_fields(block)
+        fields = _parse_fields(block, unknown)
         if 'Path' not in fields:
             raise ArchiveUnsafe('Archive listing has a member block without a path.')
         entries.append({
@@ -138,6 +141,8 @@ def parse_7z_listing(text: str) -> Tuple[Dict[str, str], List[Dict]]:
             'symlink': bool(fields.get('Symbolic Link')),
             'hardlink': bool(fields.get('Hard Link')),
         })
+    if unknown:
+        raise ArchiveUnsafe(f'Unknown fields in archive listing: {sorted(unknown)!r}.')
     return header, entries
 
 
