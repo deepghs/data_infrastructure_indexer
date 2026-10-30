@@ -288,3 +288,34 @@ class TestListingDifferential:
         monkeypatch.setattr(sf.subprocess, 'run', boom)
         with pytest.raises(sf.ArchiveUnsafe, match='UTF-8'):
             sf.check_archive_members(str(f), None)
+
+
+@pytest.mark.unittest
+class TestListingRetries:
+    CLEAN = LISTING.split('Path = Post/link')[0]
+
+    def _run_with(self, monkeypatch, returncodes):
+        calls = []
+        monkeypatch.setattr(sf.time, 'sleep', lambda s: None)
+
+        class Proc:
+            def __init__(self, rc):
+                self.returncode, self.stdout, self.stderr = rc, TestListingRetries.CLEAN, ''
+
+        def run(*a, **k):
+            calls.append(1)
+            return Proc(returncodes[len(calls) - 1])
+
+        monkeypatch.setattr(sf.subprocess, 'run', run)
+        return calls
+
+    def test_a_segfault_is_retried_and_the_next_attempt_is_used(self, monkeypatch):
+        calls = self._run_with(monkeypatch, [-11, -11, 0])
+        header, entries = sf._list_with_7z('a.rar', None)
+        assert len(calls) == 3 and len(entries) == 2
+
+    def test_a_listing_that_keeps_failing_is_still_refused(self, monkeypatch):
+        calls = self._run_with(monkeypatch, [-11, -11, -11])
+        with pytest.raises(sf.ArchiveUnsafe, match='exit -11'):
+            sf._list_with_7z('a.rar', None)
+        assert len(calls) == sf._LIST_ATTEMPTS

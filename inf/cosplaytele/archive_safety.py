@@ -15,8 +15,11 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 import zipfile
 from typing import Dict, List, Optional, Tuple
+
+from ditk import logging
 
 
 #: Unix file-type characters of ``ls -l`` that are not a regular file or directory.
@@ -164,19 +167,28 @@ def _list_zip(archive_file: str) -> List[Dict]:
     return entries
 
 
+#: ``7z l`` has been seen to die with a segmentation fault (exit -11) on packages that list fine on
+#: the next attempt, so a failed listing is repeated before the archive is refused.
+_LIST_ATTEMPTS = 3
+
+
 def _list_with_7z(archive_file: str, password: Optional[str]) -> Tuple[Dict[str, str], List[Dict]]:
     cmd = ['7z', 'l', '-slt', '-y']
     if password:
         cmd.append(f'-p{password}')
     cmd.append(archive_file)
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='strict',
-                              stdin=subprocess.DEVNULL, timeout=600)
-    except UnicodeDecodeError as err:
-        raise ArchiveUnsafe('Archive listing is not valid UTF-8.') from err
-    if proc.returncode != 0:
-        raise ArchiveUnsafe(f'Could not list archive (7z exit {proc.returncode}): {proc.stderr.strip()[:200]!r}')
-    return parse_7z_listing(proc.stdout)
+    for attempt in range(1, _LIST_ATTEMPTS + 1):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='strict',
+                                  stdin=subprocess.DEVNULL, timeout=600)
+        except UnicodeDecodeError as err:
+            raise ArchiveUnsafe('Archive listing is not valid UTF-8.') from err
+        if proc.returncode == 0:
+            return parse_7z_listing(proc.stdout)
+        logging.warning(f'7z listing failed (exit {proc.returncode}), attempt {attempt}/{_LIST_ATTEMPTS}.')
+        if attempt < _LIST_ATTEMPTS:
+            time.sleep(2)
+    raise ArchiveUnsafe(f'Could not list archive (7z exit {proc.returncode}): {proc.stderr.strip()[:200]!r}')
 
 
 def check_signature(archive_file: str, extension: str) -> None:

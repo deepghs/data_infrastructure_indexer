@@ -7,6 +7,7 @@ from hashlib import md5
 
 import pandas as pd
 import pytest
+import requests
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
@@ -169,6 +170,45 @@ class TestFetchPackage:
         assert (host, seen) == ('c', ['bad', 'junk', 'good'])
         assert os.path.exists(os.path.join(unpack_dir, 'P', '1.jpg'))
         assert not os.path.exists(tmp_path / 'download' / 'b' / 'p.zip')
+
+    def _flaky(self, tmp_path, monkeypatch, errors):
+        """A host that raises each of ``errors`` in turn, then delivers a good zip."""
+        calls = []
+        monkeypatch.setattr(st.time, 'sleep', lambda s: None)
+
+        def download(url, out, session):
+            calls.append(url)
+            if len(calls) <= len(errors):
+                raise errors[len(calls) - 1]
+            path = os.path.join(out, 'p.zip')
+            _make_zip(path, ['P/1.jpg'])
+            return path
+
+        self._hosts(monkeypatch, Host('a', download))
+        return calls, lambda: st.fetch_package({'id': 'x', 'a_download_url': 'u'}, str(tmp_path), None)
+
+    @pytest.mark.unittest
+    def test_a_dropped_connection_is_retried_once(self, tmp_path, monkeypatch):
+        calls, run = self._flaky(tmp_path, monkeypatch, [requests.ConnectionError('reset')])
+        assert run()[0] == 'a' and len(calls) == 2
+
+    @pytest.mark.unittest
+    def test_a_short_body_is_retried_but_a_removed_share_is_not(self, tmp_path, monkeypatch):
+        calls, run = self._flaky(tmp_path, monkeypatch, [base.DownloadError('cut short', retryable=True)])
+        assert run()[0] == 'a' and len(calls) == 2
+
+        calls, run = self._flaky(tmp_path, monkeypatch, [base.DownloadError('share removed')])
+        with pytest.raises(RuntimeError, match='share removed'):
+            run()
+        assert len(calls) == 1
+
+    @pytest.mark.unittest
+    def test_retries_are_bounded(self, tmp_path, monkeypatch):
+        errors = [requests.ConnectionError('reset')] * 5
+        calls, run = self._flaky(tmp_path, monkeypatch, errors)
+        with pytest.raises(RuntimeError, match='reset'):
+            run()
+        assert len(calls) == st._HOST_ATTEMPTS
 
     @pytest.mark.unittest
     def test_hosts_without_a_link_are_skipped_and_none_left_is_an_error(self, tmp_path, monkeypatch):

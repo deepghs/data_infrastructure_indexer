@@ -11,7 +11,16 @@ from inf.utils.session import get_requests_session, get_random_ua
 
 
 class DownloadError(Exception):
-    """A package could not be fetched from a host, so the next host in the order is tried."""
+    """
+    A package could not be fetched from a host, so the next host in the order is tried.
+
+    ``retryable`` marks a failure that is likely to pass on a second attempt, such as a body cut
+    short, as opposed to a removed share or a transfer too slow to be worth repeating.
+    """
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def get_download_session(timeout: int = 60, max_retries: int = 3):
@@ -85,7 +94,7 @@ def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
                     raise DownloadError(f'Too slow, {window_bytes / _STALL_WINDOW / 1024:.0f} KiB/s over '
                                         f'{_STALL_WINDOW}s, abandoned.')
         if expected_size is not None and written != expected_size:
-            raise DownloadError(f'Incomplete download, got {written} of {expected_size} bytes.')
+            raise DownloadError(f'Incomplete download, got {written} of {expected_size} bytes.', retryable=True)
     except Exception:
         if os.path.exists(dst_file):
             os.remove(dst_file)

@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Tuple
 import click
 import numpy as np
 import pandas as pd
+import requests
 from ditk import logging
 from hbutils.encoding import md5
 from hbutils.string import plural_word
@@ -54,7 +55,7 @@ from pyrate_limiter import Duration, Limiter, Rate
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_upload_directory_as_directory
 from .archive_safety import ArchiveUnsafe, check_archive_members, validate_tree
-from .hosts import HOSTS, get_download_session
+from .hosts import HOSTS, DownloadError, get_download_session
 from .index import _read_table
 
 mimetypes.add_type('image/webp', '.webp')
@@ -64,6 +65,15 @@ mimetypes.add_type('image/webp', '.webp')
 #: rotated link key, a changed page, a check rejecting everything - and carrying on would download
 #: gigabytes per post for nothing until the time budget ran out.
 _MAX_CONSECUTIVE_FAILURES = 10
+
+
+#: Attempts per host for a failure that is likely to be momentary. Each retry fetches a fresh signed
+#: link, since the old one may have expired or been cut off.
+_HOST_ATTEMPTS = 2
+
+
+def _is_transient(err: Exception) -> bool:
+    return isinstance(err, requests.RequestException) or (isinstance(err, DownloadError) and err.retryable)
 
 
 class UnpackError(Exception):
@@ -109,19 +119,25 @@ def fetch_package(post: Dict, work_dir: str, session) -> Tuple[str, str]:
         unpack_dir = os.path.join(work_dir, 'unpack', host.name)
         os.makedirs(download_dir, exist_ok=True)
         os.makedirs(unpack_dir, exist_ok=True)
-        archive_file = None
-        try:
-            archive_file = host.download(url, download_dir, session)
-            logging.info(f'Unpacking {os.path.basename(archive_file)!r} ...')
-            unpack_package(archive_file, unpack_dir, _to_none(post.get('unzip_password')))
-            return host.name, unpack_dir
-        except Exception as err:
-            logging.warning(f'Post {post["id"]!r} failed on {host.name}: {err!r}')
-            failures.append(f'{host.name}: {err!r}')
-        finally:
-            # The archive is no longer needed either way; free the disk before the next attempt.
-            if archive_file and os.path.exists(archive_file):
-                os.remove(archive_file)
+        for attempt in range(1, _HOST_ATTEMPTS + 1):
+            archive_file = None
+            try:
+                archive_file = host.download(url, download_dir, session)
+                logging.info(f'Unpacking {os.path.basename(archive_file)!r} ...')
+                unpack_package(archive_file, unpack_dir, _to_none(post.get('unzip_password')))
+                return host.name, unpack_dir
+            except Exception as err:
+                transient = _is_transient(err)
+                logging.warning(f'Post {post["id"]!r} failed on {host.name} (attempt {attempt}/{_HOST_ATTEMPTS}): '
+                                f'{err!r}')
+                if not (transient and attempt < _HOST_ATTEMPTS):
+                    failures.append(f'{host.name}: {err!r}')
+                    break
+                time.sleep(5)
+            finally:
+                # The archive is no longer needed either way; free the disk before the next attempt.
+                if archive_file and os.path.exists(archive_file):
+                    os.remove(archive_file)
 
     raise RuntimeError('; '.join(failures) if failures else 'no supported host link')
 

@@ -62,6 +62,8 @@ jobs:
           # 7z also lists archive members before anything is extracted, so it is not optional.
           command -v 7z
           command -v unrar || true
+          7z | head -n 2 || true
+          unrar | head -n 2 || true
       - name: Set up python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
