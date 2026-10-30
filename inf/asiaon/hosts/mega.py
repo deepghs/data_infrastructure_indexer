@@ -93,7 +93,8 @@ def _ask_api(handle: str) -> dict:
                                     kind=_GONE_KINDS.get(answer, 'deleted'))
             if answer == _EOVERQUOTA:
                 raise DownloadError('mega: transfer quota exceeded', blocked=True)
-            raise DownloadError(f'mega: the API answered error {answer}', retryable=answer == _EAGAIN)
+            raise DownloadError(f'mega: the API answered error {answer}', retryable=answer == _EAGAIN,
+                                blocked=answer == _EAGAIN)
         return answer
     raise AssertionError('Unreachable code reached in _ask_api.')
 

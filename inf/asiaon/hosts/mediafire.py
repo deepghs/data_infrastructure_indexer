@@ -49,7 +49,7 @@ def download_mediafire(url: str, output_dir: str) -> str:
         logging.warning(f'mediafire page gave no download link ({last}), attempt {attempt}/{_PAGE_ATTEMPTS}.')
     if not direct:
         raise DownloadError(f'mediafire: no download link after {_PAGE_ATTEMPTS} sessions ({last}), '
-                            f'probably a Cloudflare challenge')
+                            f'probably a Cloudflare challenge', blocked=True)
 
     resp = get(session, direct, stream=True, allow_redirects=True)
     if resp.status_code == 200 and not resp.headers.get('Content-Disposition') \

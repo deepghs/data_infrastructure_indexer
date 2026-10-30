@@ -540,6 +540,7 @@ class TestParallelPipeline:
         monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
         monkeypatch.setattr(st, '_WAIT_SLICE', 0.05)
         world.setup([1, 2, 3, 4], [])
+
         def deploy_while_blocked():
             seen = []
             real_upload = st.safe_upload_directory_as_directory
@@ -815,3 +816,20 @@ class TestEveryCommitIsConsistent:
         final = gone_file(world.uploads[-1][1])['posts']
         # every odd post is dead, every even one stored, and the odd ones were recorded as they were met
         assert sorted(int(k.split('-')[1]) for k in final) == [d for d in range(3, 25) if d % 2 == 1]
+
+
+@pytest.mark.unittest
+class TestBlockedHost:
+    def test_a_blocked_host_is_set_aside_and_its_posts_are_deferred_not_failed(self, world, monkeypatch, tmp_path):
+        asked = []
+
+        def host(url, out):
+            asked.append(url)
+            raise DownloadError('Cloudflare challenge', blocked=True)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        world.setup(list(range(1, 13)), [])
+        world.run(workers=1, max_consecutive_failures=3)
+        # asked once for the first post, never again; nothing counted as a failure, nothing stored
+        assert len(asked) == 1
+        assert not package_commits(world)
