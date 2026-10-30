@@ -61,8 +61,10 @@ class TestSorafolder:
 
     def test_safe_local_name_never_keeps_remote_path(self):
         assert base.safe_local_name('../../etc/passwd.rar') == 'package.rar'
+        assert base.safe_local_name('Pack.ZIP') == 'package.zip'
         assert base.safe_local_name('no extension') == 'package'
-        assert base.safe_local_name('a.r;m -rf') == 'package.rmrf'
+        assert base.safe_local_name('a.r;m -rf') == 'package'
+        assert base.safe_local_name('x.sh') == 'package'
 
 
 @pytest.mark.unittest

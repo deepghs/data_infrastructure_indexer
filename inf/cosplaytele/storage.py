@@ -47,6 +47,7 @@ from pyrate_limiter import Duration, Limiter, Rate
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_upload_directory_as_directory
+from .archive_safety import ArchiveUnsafe, check_archive_members, validate_tree
 from .hosts import HOSTS, get_download_session
 from .index import _read_table
 
@@ -68,26 +69,18 @@ def unpack_package(archive_file: str, directory: str, password: Optional[str]) -
     """
     Unpack ``archive_file`` into ``directory`` and return the number of files.
 
-    A package only counts as unpacked when it produced at least one file and every one of them is a
-    regular file inside ``directory``; a symlink or an escaped path means the archive is not
-    something to repack and publish.
+    The member list is checked before extracting and the tree after, see
+    :mod:`inf.cosplaytele.archive_safety`; a package only counts as unpacked when both pass and it
+    produced at least one file.
     """
     try:
+        check_archive_members(archive_file, password)
         archive_unpack(archive_file=archive_file, directory=directory, password=password)
+        return validate_tree(directory)
+    except ArchiveUnsafe as err:
+        raise UnpackError(f'Refused unsafe archive - {err}') from err
     except Exception as err:
         raise UnpackError(f'Unpack failed - {err!r}') from err
-
-    root = os.path.realpath(directory)
-    count = 0
-    for dirpath, _, filenames in os.walk(directory):
-        for name in filenames:
-            path = os.path.join(dirpath, name)
-            if os.path.islink(path) or not os.path.realpath(path).startswith(root + os.sep):
-                raise UnpackError(f'Unsafe entry in archive: {os.path.relpath(path, directory)!r}')
-            count += 1
-    if count == 0:
-        raise UnpackError('Archive unpacked to no files.')
-    return count
 
 
 def fetch_package(post: Dict, work_dir: str, session) -> Tuple[str, str]:

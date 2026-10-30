@@ -1,6 +1,5 @@
 """Shared pieces for the download hosts that cosplaytele posts link to."""
 import os
-import re
 import time
 from collections import deque
 from typing import Callable, Optional
@@ -22,17 +21,22 @@ def get_download_session(timeout: int = 60, max_retries: int = 3):
     return session
 
 
+#: Archive types the unpacker is willing to be handed. The remote name decides the extension, and
+#: the extension decides which tool runs, so anything else is stored without one and rejected.
+_ARCHIVE_EXTENSIONS = {'rar', 'zip', '7z'}
+
+
 def safe_local_name(remote_name: str, default: str = 'package') -> str:
     """
     A local file name for a remote one.
 
     Remote names are only ever used for display; the archive is stored under a fixed stem so a
-    hostile or odd name cannot reach outside the download directory. The extension is kept
-    because the RAR tooling decides what to do from it.
+    hostile or odd name cannot reach outside the download directory, and only a known archive
+    extension is carried over.
     """
     _, ext = os.path.splitext(os.path.basename(remote_name or ''))
-    ext = re.sub(r'[^0-9A-Za-z]', '', ext)[:8].lower()
-    return f'{default}.{ext}' if ext else default
+    ext = ext.lstrip('.').lower()
+    return f'{default}.{ext}' if ext in _ARCHIVE_EXTENSIONS else default
 
 
 #: A transfer averaging less than this over ``_STALL_WINDOW`` is abandoned, since at that speed a

@@ -59,7 +59,9 @@ jobs:
           sudo apt-get update
           # The packages are RAR archives; unrar is the tool rarfile drives, 7z is the fallback.
           sudo apt-get install -y unrar p7zip-full || sudo apt-get install -y p7zip-full
-          which unrar 7z || true
+          # 7z also lists archive members before anything is extracted, so it is not optional.
+          command -v 7z
+          command -v unrar || true
       - name: Set up python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
