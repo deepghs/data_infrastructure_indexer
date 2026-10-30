@@ -17,6 +17,12 @@ whose package downloads *and* unpacks; anything less leaves it out of storage al
 next run simply tries it again. Nothing is recorded about failures - a post is either in
 ``posts.parquet`` or it is not.
 
+History
+=======
+
+This job only ever adds commits and never rewrites history: squashing the repository is a manual
+decision, made by hand when wanted.
+
 Disk
 ====
 
@@ -52,10 +58,6 @@ from .hosts import HOSTS, get_download_session
 from .index import _read_table
 
 mimetypes.add_type('image/webp', '.webp')
-
-#: History is squashed once the repository holds this many commits; one commit per post adds up.
-_SQUASH_THRESHOLD = 300
-
 
 #: Posts in a row that may fail before the run gives up. A single post can fail for its own reasons,
 #: such as a removed share, but a long unbroken run of failures means something systematic - a
@@ -214,13 +216,6 @@ def _tag_updates(post: Dict, d_tags: Dict, d_origin_tags: Dict) -> Dict:
     return updates
 
 
-def _squash_if_needed(hf_client, repository: str):
-    commits = len(hf_client.list_repo_commits(repo_id=repository, repo_type='dataset'))
-    if commits >= _SQUASH_THRESHOLD:
-        logging.info(f'{plural_word(commits, "commit")} in {repository!r}, squashing history ...')
-        hf_client.super_squash_history(repo_id=repository, repo_type='dataset', commit_message='Squashed!')
-
-
 def sync(index_repository: str, repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
          hf_upload_interval: float = 30.0, max_posts: Optional[int] = None, dry_run: bool = False,
          max_consecutive_failures: int = _MAX_CONSECUTIVE_FAILURES):
@@ -329,8 +324,6 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             logging.info(f'Post {post["id"]!r} stored via {host_name}, '
                          f'{plural_word(file_count, "file")}, {package_size} bytes.')
 
-    if stored and not dry_run:
-        _squash_if_needed(hf_client, repository)
     logging.info(f'Done: {plural_word(stored, "post")} stored, {plural_word(len(failed), "post")} failed '
                  f'{failed[:20]!r}, {plural_word(len(posts), "post")} in storage.')
     if failed:

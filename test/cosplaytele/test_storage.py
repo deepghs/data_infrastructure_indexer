@@ -204,13 +204,16 @@ class TestSync:
             def repo_exists(self, **kw):
                 return True
 
+            def __getattr__(self, name):
+                # Only repo_exists is expected; any other call, squashing history included, fails the test.
+                raise AssertionError(f'unexpected hub call: {name}')
+
         monkeypatch.setenv('HF_TOKEN', 'x')
         monkeypatch.setattr(st, 'get_hf_client', lambda **kw: Client())
         monkeypatch.setattr(st, 'get_hf_fs', lambda **kw: None)
         monkeypatch.setattr(st, '_read_table', lambda c, f, repo, name: tables.get((repo, name)))
         monkeypatch.setattr(st, 'get_download_session', lambda: None)
         monkeypatch.setattr(st, 'delete_detached_cache', lambda: None)
-        monkeypatch.setattr(st, '_squash_if_needed', lambda *a: None)
 
         def fake_upload(local_directory, message, **kw):
             dest = tmp_path / f'upload{len(uploads)}'
