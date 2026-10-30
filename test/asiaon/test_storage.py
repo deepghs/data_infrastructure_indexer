@@ -442,6 +442,58 @@ class TestUnpackPackage:
 
 
 @pytest.mark.unittest
+class TestBatchesDoNotWaitForTheNextStoredPost:
+    def test_built_packages_are_committed_during_a_stretch_of_dead_links(self, world, monkeypatch):
+        # The incident: 8 packages were built in the first minutes, then 1,800 dead links followed. Nothing was
+        # committed until the end of the run, and cancelling the run lost all of it.
+        asked = []
+
+        def host(url, out):
+            asked.append(url)
+            if url.endswith(('/20', '/19', '/18')):  # the newest three are alive, everything older is dead
+                return world.good_host('mediafire')(url, out)
+            raise DownloadError('deleted', gone=True)
+
+        world.setup(list(range(1, 21)), [])
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        clock = {'t': 1000.0}
+
+        class FakeTime:  # only the storage module sees it; the zip writer and everything else keep the real clock
+            @staticmethod
+            def time():
+                clock['t'] += 40.0  # every look at the clock is forty seconds later
+                return clock['t']
+
+            @staticmethod
+            def sleep(seconds):
+                pass
+
+        monkeypatch.setattr(st, 'time', FakeTime)
+        seen_at_upload = []
+        original = st.safe_upload_directory_as_directory
+
+        def recording_upload(**kw):
+            seen_at_upload.append(len(asked))
+            return original(**kw)
+
+        monkeypatch.setattr(st, 'safe_upload_directory_as_directory', recording_upload)
+        st.sync('idx', 'stor', deploy_span=300, max_dead_streak=0)  # a real interval; world.run never lets one expire
+        total = len(asked)
+        assert total == 20 and len(seen_at_upload) >= 2
+        # the batch holding the last two packages went up while the walk was still running, not after it
+        assert seen_at_upload[-1] < total
+
+    def test_nothing_is_committed_early_when_nothing_is_pending(self, world, monkeypatch):
+        def gone(url, out):
+            raise DownloadError('deleted', gone=True)
+
+        world.setup(list(range(1, 6)), [])
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', gone)])
+        world.run(max_dead_streak=0)
+        assert world.uploads == []
+
+
+@pytest.mark.unittest
 class TestParallelPipeline:
     def _final(self, world):
         final = world.uploads[-1][1]

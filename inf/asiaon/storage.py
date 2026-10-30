@@ -542,6 +542,9 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             inflight.clear()
 
         while True:
+            # Checked on every turn, not only after a post is stored: a long stretch of dead links stores
+            # nothing, and packages that are already built must not wait for the next stored post to be committed.
+            _deploy()
             _submit_more()
             if not inflight:
                 break
