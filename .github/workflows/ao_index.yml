@@ -1,0 +1,90 @@
+#file: noinspection YAMLSchemaValidation
+name: Asiaon Index
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_time_limit:
+        description: 'Stop fetching after this duration, leaving room for the final upload'
+        required: false
+        default: '5h'
+      max_empty_pages:
+        description: 'Stop after this many consecutive listing pages with nothing new. 0 walks the
+          whole listing, which is how a full rebuild is done.'
+        required: false
+        default: '10'
+      max_posts:
+        description: 'Fetch at most this many new posts. Empty means no limit.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Fetch and build the tables, but upload nothing.'
+        required: false
+        default: 'false'
+  # Once a day, an hour after the cosplaytele index. The site publishes about twenty posts a day,
+  # so a run collects that many: two or three listing pages, a detail request per post, and the ten
+  # pages spent confirming nothing older is missing. The tables are rewritten whole on each deploy,
+  # so two runs must never overlap - the concurrency group below queues a second one behind the
+  # first instead of letting whichever uploads last replace the other's work.
+  schedule:
+    - cron: '25 4 * * *'
+
+concurrency:
+  group: ao-index
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ao_index:
+    name: Asiaon Index
+    runs-on: ${{ matrix.os }}
+    # GitHub hard-kills a job at 360 minutes; leave room for the final upload.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - 'ubuntu-latest'
+        python-version:
+          - '3.11'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          persist-credentials: false
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run asiaon index
+        env:
+          CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REMOTE_REPOSITORY_AO: ${{ secrets.REMOTE_REPOSITORY_AO }}
+          MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
+          MAX_EMPTY_PAGES: ${{ github.event.inputs.max_empty_pages || '10' }}
+          MAX_POSTS: ${{ github.event.inputs.max_posts || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        shell: bash
+        run: |
+          EXTRA=()
+          if [ -n "$MAX_POSTS" ]; then
+            EXTRA+=(--max-posts "$MAX_POSTS")
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            EXTRA+=(--dry-run)
+          fi
+          python -m inf.asiaon.index \
+            --max-time-limit "$MAX_TIME_LIMIT" \
+            --max-empty-pages "$MAX_EMPTY_PAGES" \
+            "${EXTRA[@]}"
