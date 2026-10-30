@@ -44,6 +44,9 @@ def safe_local_name(remote_name: str, default: str = 'package') -> str:
 _MIN_SPEED = 1 * 1024 ** 2
 _STALL_WINDOW = 5 * 60
 
+#: Seconds between progress lines, so a slow transfer is visible in the log instead of looking hung.
+_REPORT_EVERY = 60
+
 
 def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
                    chunk_size: int = 1 << 20, clock: Callable[[], float] = time.time) -> int:
@@ -59,6 +62,7 @@ def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
 
     window = deque()  # (timestamp, size) of chunks inside the stall window
     window_bytes, written = 0, 0
+    started = last_report = clock()
     os.makedirs(os.path.dirname(dst_file) or '.', exist_ok=True)
     try:
         with open(dst_file, 'wb') as f:
@@ -68,6 +72,11 @@ def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
                 f.write(chunk)
                 written += len(chunk)
                 now = clock()
+                if now - last_report >= _REPORT_EVERY:
+                    last_report = now
+                    total = f' of {expected_size / 1024 ** 2:.0f} MiB' if expected_size else ''
+                    logging.info(f'Downloading {os.path.basename(dst_file)!r}: {written / 1024 ** 2:.0f} MiB{total}, '
+                                 f'{written / max(now - started, 1e-6) / 1024 ** 2:.1f} MiB/s on average.')
                 window.append((now, len(chunk)))
                 window_bytes += len(chunk)
                 while window and window[0][0] < now - _STALL_WINDOW:
