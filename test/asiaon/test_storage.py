@@ -517,10 +517,43 @@ class TestParallelPipeline:
         world.run(workers=4)
         par_posts, par_files = self._final(world)
 
-        key = ['dbid', 'file_ids', 'package_file', 'file_count']
-        assert par_posts[key].reset_index(drop=True).equals(seq_posts[key].reset_index(drop=True))
-        cols = ['id', 'post_id', 'file_in_package', 'file_size']
-        assert par_files[cols].reset_index(drop=True).equals(seq_files[cols].reset_index(drop=True))
+        # File ids follow the order posts finish in, so only what each post holds has to agree.
+        def content(posts, files):
+            by_post = {}
+            for row in files.to_dict('records'):
+                by_post.setdefault(row['post_id'], []).append((row['file_in_package'], row['file_size']))
+            return {row['id']: (row['package_file'], row['file_count'], sorted(by_post[row['id']]))
+                    for row in posts.to_dict('records')}
+
+        assert content(par_posts, par_files) == content(seq_posts, seq_files)
+        assert sorted(par_files['id']) == sorted(seq_files['id'])
+
+    def test_a_slow_post_does_not_hold_back_the_ones_that_are_done(self, world, monkeypatch):
+        import threading
+        release = threading.Event()
+
+        def host(url, out):
+            if url.endswith('/1'):
+                release.wait(20)
+            return world.good_host('mediafire')(url, out)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        monkeypatch.setattr(st, '_WAIT_SLICE', 0.05)
+        world.setup([1, 2, 3, 4], [])
+        def deploy_while_blocked():
+            seen = []
+            real_upload = st.safe_upload_directory_as_directory
+
+            def watch(*args, **kwargs):
+                seen.append(1)
+                release.set()  # the first commit arrives while post 1 is still downloading
+                return real_upload(*args, **kwargs)
+
+            monkeypatch.setattr(st, 'safe_upload_directory_as_directory', watch)
+            st.sync('idx', 'stor', deploy_span=0, workers=3)
+            return seen
+
+        assert deploy_while_blocked()
 
     def test_parallel_batches_carry_only_their_own_packages(self, world):
         world.setup(list(range(1, 13)), [])
@@ -756,6 +789,10 @@ class TestEveryCommitIsConsistent:
         assert len(world.uploads) >= 3
         previous_gone = set()
         for message, snap in self._snapshots(world):
+            if 'posts.parquet' not in snap:
+                # a commit that only carries verdicts: the tables of the hub are untouched by it
+                assert set(snap) == {'meta/gone.json'}
+                continue
             posts = pd.read_parquet(snap['posts.parquet'])
             files = pd.read_parquet(snap['files.parquet'])
             tar_names = {k for k in snap if k.endswith('.tar')}

@@ -54,7 +54,7 @@ import tempfile
 import time
 from collections import deque
 from datetime import timezone
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Dict, List, Optional, Set, Tuple
 
 import click
@@ -88,6 +88,8 @@ _SLOW_STRIKES = 2
 _MAX_CONSECUTIVE_FAILURES = 10
 _MAX_DEAD_STREAK = 200
 _MAX_BATCH_BYTES = 6 * 1024 ** 3
+#: Seconds to wait for a finished post before looking again at whether a commit is due.
+_WAIT_SLICE = 15.0
 
 
 class PackageUnavailable(Exception):
@@ -641,7 +643,14 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             _submit_more()
             if not inflight:
                 break
-            post, future = inflight.popleft()
+            # Whichever post finishes first is taken first: waiting on the oldest one would let a single slow
+            # multi-gigabyte download hold back every verdict and package that is already done behind it.
+            done, _ = wait([f for _, f in inflight], timeout=_WAIT_SLICE, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+            entry = next(item for item in inflight if item[1] in done)
+            inflight.remove(entry)
+            post, future = entry
             try:
                 result = future.result()
             except PackageDeferred as err:
