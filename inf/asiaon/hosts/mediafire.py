@@ -42,7 +42,9 @@ def download_mediafire(url: str, output_dir: str) -> str:
             if direct:
                 break
         elif resp.status_code == 404 or _GONE.search(resp.text):
-            raise DownloadError(f'mediafire: {url!r} is deleted or invalid', gone=True)
+            takedown = re.search(r'dangerous file|violat', resp.text, re.IGNORECASE)
+            raise DownloadError(f'mediafire: {url!r} is deleted or invalid', gone=True,
+                                kind='takedown' if takedown else 'deleted')
         last = f'HTTP {resp.status_code}'
         logging.warning(f'mediafire page gave no download link ({last}), attempt {attempt}/{_PAGE_ATTEMPTS}.')
     if not direct:

@@ -22,7 +22,7 @@ def download_pixeldrain(url: str, output_dir: str) -> str:
 
     info = get(session, f'{_API}/{ident}/info')
     if info.status_code == 404:
-        raise DownloadError(f'pixeldrain: file {ident} does not exist', gone=True)
+        raise DownloadError(f'pixeldrain: file {ident} does not exist', gone=True, kind='deleted')
     if info.status_code != 200:
         raise DownloadError(f'pixeldrain: info answered HTTP {info.status_code}', retryable=info.status_code >= 500)
     availability = info.json().get('availability')

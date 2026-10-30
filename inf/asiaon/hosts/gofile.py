@@ -77,7 +77,7 @@ def _contents(session, ident: str):
         if resp.status_code == 429:
             raise DownloadError('gofile: rate limited', blocked=True)
         if resp.status_code == 404 or 'error-notFound' in resp.text:
-            raise DownloadError(f'gofile: folder {ident} does not exist', gone=True)
+            raise DownloadError(f'gofile: folder {ident} does not exist', gone=True, kind='deleted')
         if resp.status_code in (401, 403) and attempt == 1:
             logging.warning('gofile refused the website token, computing a new one.')
             continue

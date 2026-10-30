@@ -67,6 +67,8 @@ def world(tmp_path, monkeypatch):
     ctx = Ctx()
     ctx.calls, ctx.uploads, ctx.good_host = calls, uploads, good_host
     ctx.backend = []
+    ctx.gone = {}
+    monkeypatch.setattr(st, 'read_gone', lambda c, f, repo: ctx.gone)
     monkeypatch.setattr(st, 'configure_hf_http_backend', lambda **kw: ctx.backend.append(kw))
     ctx.tables = {}
 
@@ -111,6 +113,10 @@ def world(tmp_path, monkeypatch):
     ctx.setup = setup
     ctx.run = lambda **kw: st.sync('idx', 'stor', deploy_span=10 ** 9, **kw)
     return ctx
+
+
+def package_commits(world):
+    return [u for u in world.uploads if u[0].startswith('Add')]
 
 
 def tars(path):
@@ -217,7 +223,7 @@ class TestFailureHandling:
         world.setup(list(range(1, 8)), [])
         self._hosts(monkeypatch, Host('mediafire', gone))
         world.run(max_consecutive_failures=2, max_dead_streak=0)  # would have raised if gone counted as failure
-        assert world.uploads == []
+        assert package_commits(world) == []  # nothing to store; the dead links are only recorded
 
     def test_a_long_run_of_gone_posts_ends_the_walk_quietly(self, world, monkeypatch):
         calls = []
@@ -283,7 +289,7 @@ class TestFailureHandling:
                       gofile_download_url=f'https://gf/{d}') for d in range(1, 16)])
         self._hosts(monkeypatch, Host('pixeldrain', pixeldrain), Host('gofile', gofile))
         world.run(max_consecutive_failures=3, max_dead_streak=0)  # raised before the fix
-        assert world.uploads == []
+        assert package_commits(world) == []
 
     def test_a_post_every_asked_host_says_is_gone_is_a_dead_link_when_nothing_was_skipped(self, world, monkeypatch):
         def gone(url, out):
@@ -479,17 +485,18 @@ class TestBatchesDoNotWaitForTheNextStoredPost:
         monkeypatch.setattr(st, 'safe_upload_directory_as_directory', recording_upload)
         st.sync('idx', 'stor', deploy_span=300, max_dead_streak=0)  # a real interval; world.run never lets one expire
         total = len(asked)
-        assert total == 20 and len(seen_at_upload) >= 2
-        # the batch holding the last two packages went up while the walk was still running, not after it
-        assert seen_at_upload[-1] < total
+        assert total == 20
+        # the commit that carries the last two packages went up while the walk was still running, not after it
+        carrying = [i for i, (_, path) in enumerate(world.uploads) if 'post-18.tar' in tars(path)]
+        assert len(carrying) == 1 and seen_at_upload[carrying[0]] < total
 
     def test_nothing_is_committed_early_when_nothing_is_pending(self, world, monkeypatch):
-        def gone(url, out):
-            raise DownloadError('deleted', gone=True)
+        def fault(url, out):
+            raise requests.ConnectionError('reset')  # a fault is neither stored nor recorded, so nothing is pending
 
         world.setup(list(range(1, 6)), [])
-        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', gone)])
-        world.run(max_dead_streak=0)
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', fault)])
+        world.run(max_dead_streak=0, max_consecutive_failures=10)
         assert world.uploads == []
 
 
@@ -565,3 +572,209 @@ class TestSlowHosts:
         world.run()
         assert len(asked) == 2  # two strikes, and the other two posts never asked it
         assert [c[0] for c in world.calls] == ['pixeldrain'] * 4
+
+
+def gone_file(path):
+    return json.load(open(path / 'meta' / 'gone.json', encoding='utf-8'))
+
+
+def gone_entry(host, url, kind='deleted', at=1):
+    return {'url': url, 'kind': kind, 'reason': 'deleted', 'at': at}
+
+
+@pytest.mark.unittest
+class TestGoneRecord:
+    def _gone_host(self, kind='deleted'):
+        def host(url, out):
+            raise DownloadError('file removed', gone=True, kind=kind)
+        return host
+
+    def _hosts(self, monkeypatch, *hosts):
+        monkeypatch.setattr(st, 'HOSTS', list(hosts))
+
+    def test_dead_posts_are_recorded_with_several_fields_per_host(self, world, monkeypatch):
+        world.setup([1, 2], [])
+        self._hosts(monkeypatch, Host('mediafire', self._gone_host('takedown')))
+        world.run(max_dead_streak=0)
+        record = gone_file(world.uploads[-1][1])
+        assert record['version'] == 1 and sorted(record['posts']) == ['post-1', 'post-2']
+        entry = record['posts']['post-2']
+        assert entry['dbid'] == 2
+        host = entry['hosts']['mediafire']
+        assert (host['url'], host['kind']) == ('https://mf/2', 'takedown')
+        assert 'removed' in host['reason'] and host['at'] > 0
+
+    def test_a_commit_that_only_records_dead_links_does_not_rewrite_the_tables(self, world, monkeypatch):
+        world.setup([1, 2, 3], [1])
+        self._hosts(monkeypatch, Host('mediafire', self._gone_host()))
+        world.run(max_dead_streak=0)
+        assert [m for m, _ in world.uploads] == ['Record 1 post as gone', 'Record 1 post as gone']
+        for _, path in world.uploads:
+            assert sorted(p.name for p in path.rglob('*') if p.is_file()) == ['gone.json']  # no tables, no tars
+        assert sorted(gone_file(world.uploads[-1][1])['posts']) == ['post-2', 'post-3']
+
+    def test_the_next_run_skips_recorded_posts_without_asking_anyone(self, world, monkeypatch):
+        world.setup([1, 2, 3], [])
+        world.gone.update({f'post-{d}': {'dbid': d, 'hosts': {'mediafire': gone_entry('mediafire', f'https://mf/{d}')}}
+                           for d in (1, 2, 3)})
+        asked = []
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', lambda url, out: asked.append(url))])
+        world.run(max_dead_streak=0)
+        assert asked == [] and world.uploads == []
+
+    def test_only_the_recorded_host_is_skipped_the_others_are_still_tried(self, world, monkeypatch):
+        world.setup([1], [])
+        world.tables[('idx', 'posts.parquet')] = pd.DataFrame([index_row(1, pixeldrain_download_url='https://pd/1')])
+        world.gone['post-1'] = {'dbid': 1, 'hosts': {'mediafire': gone_entry('mediafire', 'https://mf/1')}}
+        asked = []
+
+        def mediafire(url, out):
+            asked.append('mediafire')
+            raise AssertionError('a host recorded as gone must not be asked')
+
+        self._hosts(monkeypatch, Host('mediafire', mediafire), Host('pixeldrain', world.good_host('pixeldrain')))
+        world.run()
+        assert asked == [] and [c[0] for c in world.calls] == ['pixeldrain']
+        # a commit with nothing new to record leaves the gone file in the repository exactly as it was
+        assert not (world.uploads[-1][1] / 'meta').exists()
+        assert list(world.gone['post-1']['hosts']) == ['mediafire']
+
+    def test_a_different_link_for_the_same_post_is_tried_again(self, world, monkeypatch):
+        world.setup([1], [])
+        world.gone['post-1'] = {'dbid': 1, 'hosts': {'mediafire': gone_entry('mediafire', 'https://mf/OLD')}}
+        self._hosts(monkeypatch, Host('mediafire', world.good_host('mediafire')))
+        world.run()
+        assert [c[0] for c in world.calls] == ['mediafire'] and len(world.uploads) == 1
+
+    def test_records_are_never_removed_and_new_ones_are_added(self, world, monkeypatch):
+        world.setup([1, 2], [])
+        world.gone['old-post'] = {'dbid': 99, 'hosts': {'mega': gone_entry('mega', 'https://mega/x', 'takedown')}}
+        self._hosts(monkeypatch, Host('mediafire', self._gone_host()))
+        world.run(max_dead_streak=0)
+        record = gone_file(world.uploads[-1][1])['posts']
+        assert sorted(record) == ['old-post', 'post-1', 'post-2']
+        assert record['old-post']['hosts']['mega']['kind'] == 'takedown'
+
+    def test_a_stored_post_still_records_the_dead_host_it_passed_over_in_the_same_commit(self, world, monkeypatch):
+        world.setup([1], [])
+        world.tables[('idx', 'posts.parquet')] = pd.DataFrame([index_row(1, pixeldrain_download_url='https://pd/1')])
+        self._hosts(monkeypatch, Host('mediafire', self._gone_host()),
+                    Host('pixeldrain', world.good_host('pixeldrain')))
+        world.run()
+        message, path = world.uploads[-1]
+        assert message == 'Add 1 package, with 2 files, record 1 post as gone'
+        posts = pd.read_parquet(path / 'posts.parquet')
+        assert list(posts['id']) == ['post-1']  # the package and the verdict about its dead link: one commit
+        assert list(gone_file(path)['posts']['post-1']['hosts']) == ['mediafire']
+
+    def test_faults_and_throttling_are_never_recorded_as_dead(self, world, monkeypatch):
+        def fault(url, out):
+            raise requests.ConnectionError('reset')
+
+        def blocked(url, out):
+            raise DownloadError('quota', blocked=True)
+
+        world.setup([1, 2], [])
+        self._hosts(monkeypatch, Host('mediafire', fault))
+        world.run(max_consecutive_failures=5)
+        assert world.uploads == []
+        world.setup([1, 2], [])
+        self._hosts(monkeypatch, Host('mediafire', blocked))
+        world.run(max_consecutive_failures=5, max_dead_streak=0)
+        assert world.uploads == []
+
+    def test_dead_links_are_committed_on_schedule_during_a_long_stretch_of_them(self, world, monkeypatch):
+        # Not only once every post has been asked: a record that waited for the end would be lost with the run.
+        asked = []
+
+        def host(url, out):
+            asked.append(url)
+            raise DownloadError('deleted', gone=True)
+
+        world.setup(list(range(1, 31)), [])
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        clock = {'t': 1000.0}
+
+        class FakeTime:
+            @staticmethod
+            def time():
+                clock['t'] += 40.0
+                return clock['t']
+
+            @staticmethod
+            def sleep(seconds):
+                pass
+
+        monkeypatch.setattr(st, 'time', FakeTime)
+        seen = []
+        original = st.safe_upload_directory_as_directory
+
+        def recording(**kw):
+            seen.append(len(asked))
+            return original(**kw)
+
+        monkeypatch.setattr(st, 'safe_upload_directory_as_directory', recording)
+        st.sync('idx', 'stor', deploy_span=300, max_dead_streak=0)
+        assert len(seen) >= 3 and seen[0] < seen[-1] <= 30  # several commits while the walk was still going
+        assert len(gone_file(world.uploads[-1][1])['posts']) == 30
+
+
+@pytest.mark.unittest
+class TestEveryCommitIsConsistent:
+    """The state at every commit, taken as the dataset's files accumulate, must hold together."""
+
+    def _snapshots(self, world):
+        files = {}
+        for message, path in world.uploads:
+            for p in path.rglob('*'):
+                if p.is_file():
+                    files[str(p.relative_to(path))] = p
+            yield message, dict(files)
+
+    def test_tables_tars_and_the_gone_record_agree_in_every_commit(self, world, monkeypatch):
+        def host(url, out):
+            if url[-1] in '13579':
+                raise DownloadError('deleted', gone=True, kind='takedown')
+            return world.good_host('mediafire')(url, out)
+
+        world.setup(list(range(1, 25)), [1, 2])
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        clock = {'t': 1000.0}
+
+        class FakeTime:
+            @staticmethod
+            def time():
+                clock['t'] += 40.0
+                return clock['t']
+
+            @staticmethod
+            def sleep(seconds):
+                pass
+
+        monkeypatch.setattr(st, 'time', FakeTime)
+        st.sync('idx', 'stor', deploy_span=300, max_dead_streak=0, workers=3, max_batch_bytes=1500)
+        assert len(world.uploads) >= 3
+        previous_gone = set()
+        for message, snap in self._snapshots(world):
+            posts = pd.read_parquet(snap['posts.parquet'])
+            files = pd.read_parquet(snap['files.parquet'])
+            tar_names = {k for k in snap if k.endswith('.tar')}
+            # every stored post has its tar and its index in the snapshot, and exactly its file rows
+            for row in posts.itertuples():
+                if row.id in ('post-1', 'post-2'):
+                    continue  # the two that were stored before this run
+                assert row.package_file in tar_names and row.package_file[:-4] + '.json' in snap
+                ids = json.loads(row.file_ids)
+                mine = files[files.post_id == row.id]
+                assert sorted(mine['id']) == sorted(ids) and len(ids) == row.file_count
+            # no file row without its post, ids stay unique and contiguous
+            assert set(files.post_id) <= set(posts['id']) and files['id'].is_unique
+            assert sorted(files['id']) == list(range(1, len(files) + 1))
+            # the gone record only grows, and a post is never both stored and recorded dead on every host
+            record = gone_file(snap['meta/gone.json'].parent.parent)['posts'] if 'meta/gone.json' in snap else {}
+            assert previous_gone <= set(record)
+            previous_gone = set(record)
+            assert not (set(record) & set(posts['id']))
+        final = gone_file(world.uploads[-1][1])['posts']
+        # every odd post is dead, every even one stored, and the odd ones were recorded as they were met
+        assert sorted(int(k.split('-')[1]) for k in final) == [d for d in range(3, 25) if d % 2 == 1]

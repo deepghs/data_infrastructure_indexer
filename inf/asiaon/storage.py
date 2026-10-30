@@ -173,6 +173,45 @@ def unpack_package(archive_file: str, directory: str, stored_password: Optional[
         raise UnpackError(f'Unpack failed - {err!r}') from err
 
 
+#: Where posts whose links are confirmed dead are recorded, inside the storage dataset itself.
+_GONE_FILE = 'meta/gone.json'
+
+
+def read_gone(hf_client, hf_fs, repository: str) -> Dict[str, Dict]:
+    """
+    The posts recorded as gone: ``{post id: {'dbid': ..., 'hosts': {host: {'url', 'kind', 'reason', 'at'}}}}``.
+
+    A file that exists but cannot be read is an error, never an empty record: carrying on would write a
+    near-empty file over the real one at the next commit.
+    """
+    if not hf_fs.exists(f'datasets/{repository}/{_GONE_FILE}'):
+        return {}
+    path = safe_hf_hub_download(hf_client, repo_id=repository, repo_type='dataset', filename=_GONE_FILE)
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)['posts']
+
+
+def write_gone(directory: str, posts: Dict[str, Dict]) -> None:
+    os.makedirs(os.path.join(directory, os.path.dirname(_GONE_FILE)), exist_ok=True)
+    with open(os.path.join(directory, _GONE_FILE), 'w', encoding='utf-8') as f:
+        json.dump({'version': 1, 'posts': posts}, f, ensure_ascii=False, sort_keys=True, indent=1)
+
+
+def merge_gone(live: Dict[str, Dict], pending: Dict[str, Dict]) -> Dict[str, Dict]:
+    """``live`` with ``pending`` added; nothing is ever removed from a record."""
+    merged = {pid: {'dbid': entry.get('dbid'), 'hosts': dict(entry['hosts'])} for pid, entry in live.items()}
+    for pid, entry in pending.items():
+        target = merged.setdefault(pid, {'dbid': entry.get('dbid'), 'hosts': {}})
+        target['hosts'].update(entry['hosts'])
+    return merged
+
+
+def is_known_gone(record: Optional[Dict], host_name: str, url: str) -> bool:
+    """Whether this host's link for this post is recorded as gone. A different link is a new link."""
+    entry = ((record or {}).get('hosts') or {}).get(host_name)
+    return bool(entry) and entry.get('url') == url
+
+
 def usable_url(host, post: Dict) -> Optional[str]:
     url = _to_none(post.get(host.column))
     # Some old records hold the site's own data-API address where a download link should be.
@@ -181,19 +220,26 @@ def usable_url(host, post: Dict) -> Optional[str]:
     return url
 
 
-def fetch_package(post: Dict, work_dir: str, disabled: Set[str],
-                  strikes: Optional[Dict[str, int]] = None) -> Tuple[str, str]:
+def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Optional[Dict[str, int]] = None,
+                  known_gone: Optional[Dict] = None, gone_hosts: Optional[Dict[str, Dict]] = None) -> Tuple[str, str]:
     """
     Download and unpack a post's package from the first host that delivers.
 
     :returns: The host used and the directory the files were unpacked into.
     :raises PackageUnavailable: When no host has a live link for this post.
     :raises PackageFailed: When a host had one and the package still could not be had.
+
+    ``known_gone`` is this post's entry in the gone record: hosts recorded there are not asked again.
+    Each host that says the link is gone this time is added to ``gone_hosts`` with its kind and reason,
+    whatever the post's final outcome, so the caller can record it.
     """
     outcomes: List[Tuple[str, str, str]] = []  # (host, 'gone' | 'fault' | 'skipped', text)
     for host in HOSTS:
         url = usable_url(host, post)
         if not url:
+            continue
+        if is_known_gone(known_gone, host.name, url):
+            outcomes.append((host.name, 'gone', f'{host.name}: recorded as gone'))
             continue
         if host.name in disabled:
             outcomes.append((host.name, 'skipped', f'{host.name}: skipped, refusing this run'))
@@ -234,6 +280,8 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str],
                 if archive_file and os.path.exists(archive_file):
                     os.remove(archive_file)
         kind = 'gone' if isinstance(verdict, DownloadError) and verdict.gone else 'fault'
+        if kind == 'gone' and gone_hosts is not None:
+            gone_hosts[host.name] = {'kind': verdict.kind, 'reason': str(verdict)[:300]}
         outcomes.append((host.name, kind, f'{host.name}: {verdict!r}'))
 
     text = '; '.join(item[2] for item in outcomes)
@@ -260,25 +308,34 @@ def build_package(post_id: str, unpack_dir: str, batch_dir: str) -> Tuple[str, i
     return package_file, os.path.getsize(tar_file), len(meta_data['files']), list(meta_data['files'].keys())
 
 
-def process_post(post: Dict, staging_root: str, disabled: Set[str], strikes: Dict[str, int]) -> Dict:
+def process_post(post: Dict, staging_root: str, disabled: Set[str], strikes: Dict[str, int],
+                 known_gone: Optional[Dict] = None) -> Dict:
     """
     Download, unpack and repack one post, leaving the tar in a staging directory of its own.
 
     Runs in a worker thread, so nothing here touches the batch or the tables: the tar and its index
     are built under ``staging_root`` and handed to the main thread, which moves them into the batch
-    once it is this post's turn.
+    once it is this post's turn. The hosts that said the post's link is gone come back too, as
+    ``gone_hosts`` in the result, or as an attribute of the exception when the post did not make it.
     """
-    with TemporaryDirectory() as td:
-        host_name, unpack_dir = fetch_package(post, os.path.join(td, 'work'), disabled, strikes)
-        stage = tempfile.mkdtemp(dir=staging_root)
-        try:
-            package_file, package_size, file_count, members = build_package(post['id'], unpack_dir, stage)
-            sizes = [os.path.getsize(os.path.join(unpack_dir, member)) for member in members]
-        except Exception:
-            shutil.rmtree(stage, ignore_errors=True)
-            raise
+    gone_hosts: Dict[str, Dict] = {}
+    try:
+        with TemporaryDirectory() as td:
+            host_name, unpack_dir = fetch_package(post, os.path.join(td, 'work'), disabled, strikes,
+                                                  known_gone, gone_hosts)
+            stage = tempfile.mkdtemp(dir=staging_root)
+            try:
+                package_file, package_size, file_count, members = build_package(post['id'], unpack_dir, stage)
+                sizes = [os.path.getsize(os.path.join(unpack_dir, member)) for member in members]
+            except Exception:
+                shutil.rmtree(stage, ignore_errors=True)
+                raise
+    except Exception as err:
+        err.gone_hosts = gone_hosts
+        raise
     return {'host': host_name, 'package_file': package_file, 'package_size': package_size,
-            'file_count': file_count, 'members': members, 'sizes': sizes, 'stage': stage}
+            'file_count': file_count, 'members': members, 'sizes': sizes, 'stage': stage,
+            'gone_hosts': gone_hosts}
 
 
 def adopt_staged(stage: str, batch_dir: str) -> None:
@@ -444,15 +501,26 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
     live_tags = {r['id']: r for r in tags_table.to_dict('records')} if tags_table is not None else {}
     live_categories = {r['id']: r for r in categories_table.to_dict('records')} if categories_table is not None else {}
     exist_post_ids = set(df_posts['id']) if df_posts is not None else set()
+    live_gone = read_gone(hf_client, hf_fs, repository)
     max_file_id = int(df_files['id'].max()) if df_files is not None and len(df_files) else 0
     logging.info(f'Storage {repository!r} holds {plural_word(len(exist_post_ids), "post")} and '
                  f'{plural_word(0 if df_files is None else len(df_files), "file")}, last file id {max_file_id}.')
 
     candidates = df_index.sort_values(by=['created_at', 'dbid'], ascending=[False, False]).to_dict('records')
+
+    def _worth_asking(post: Dict) -> bool:
+        # some host with a link this job can use that is not already recorded as gone for that link
+        return any(usable_url(h, post) and not is_known_gone(live_gone.get(post['id']), h.name, usable_url(h, post))
+                   for h in HOSTS)
+
     candidates = [r for r in candidates
                   if r['id'] not in exist_post_ids and any(usable_url(h, r) for h in HOSTS)
                   and (created_before is None or r['created_at'] < created_before)
                   and (created_after is None or r['created_at'] >= created_after)]
+    recorded_dead = sum(1 for r in candidates if not _worth_asking(r))
+    candidates = [r for r in candidates if _worth_asking(r)]
+    logging.info(f'{plural_word(len(live_gone), "post")} recorded as gone, {recorded_dead} of them among the '
+                 f'posts that would otherwise be tried, skipped for good.')
     other = len(df_index) - len(exist_post_ids & set(df_index['id'])) - len(candidates)
     logging.info(f'{plural_word(len(candidates), "post")} to try from {[h.name for h in HOSTS]!r}; '
                  f'{plural_word(other, "other post")} not stored and not fetchable here.')
@@ -462,6 +530,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
     pending_files: List[Dict] = []
     pending_tags: Dict[str, Dict] = {}
     pending_categories: Dict[str, Dict] = {}
+    pending_gone: Dict[str, Dict] = {}
     disabled: Set[str] = set()
     counts = {'stored': 0, 'failed': 0, 'unavailable': 0, 'deferred': 0}
     failed_ids: List[str] = []
@@ -474,24 +543,45 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 path = os.path.join(batch_dir, name)
                 shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
 
+        def _note_gone(post: Dict, gone_hosts: Optional[Dict[str, Dict]]) -> None:
+            for host_name, verdict in (gone_hosts or {}).items():
+                host = next(h for h in HOSTS if h.name == host_name)
+                dbid = _to_none(post.get('dbid'))
+                entry = pending_gone.setdefault(post['id'], {'dbid': None if dbid is None else int(dbid), 'hosts': {}})
+                entry['hosts'][host_name] = {'url': usable_url(host, post), 'kind': verdict['kind'],
+                                             'reason': verdict['reason'], 'at': int(time.time())}
+
         def _deploy(force: bool = False):
             nonlocal df_posts, df_files
-            if not pending_posts:
+            if not pending_posts and not pending_gone:
                 return
             due = state['last_deploy'] is None or time.time() - state['last_deploy'] >= deploy_span \
                 or state['batch_bytes'] >= max_batch_bytes
             if not (force or due):
                 return
 
-            new_posts = pd.DataFrame(pending_posts)
-            new_files = pd.DataFrame(pending_files)
-            all_posts = new_posts if df_posts is None else pd.concat([df_posts, new_posts], ignore_index=True)
-            all_files = new_files if df_files is None else pd.concat([df_files, new_files], ignore_index=True)
-            write_tables(batch_dir, all_posts, all_files, {**live_tags, **pending_tags},
-                         {**live_categories, **pending_categories})
+            # Everything consumed so far, packages, rows and dead-link verdicts alike, goes up in this one
+            # commit, and the live state advances to exactly that: a post's package and what was learned
+            # about its links can never be split across two commits. The two-million-row tables are only
+            # rewritten when there is a package to add; a commit that only records dead links carries the
+            # small gone file alone.
+            if pending_posts:
+                new_posts = pd.DataFrame(pending_posts)
+                new_files = pd.DataFrame(pending_files)
+                all_posts = new_posts if df_posts is None else pd.concat([df_posts, new_posts], ignore_index=True)
+                all_files = new_files if df_files is None else pd.concat([df_files, new_files], ignore_index=True)
+                write_tables(batch_dir, all_posts, all_files, {**live_tags, **pending_tags},
+                             {**live_categories, **pending_categories})
+            if pending_gone:
+                write_gone(batch_dir, merge_gone(live_gone, pending_gone))
+            gone_note = f'record {plural_word(len(pending_gone), "post")} as gone'
+            if pending_posts:
+                message = f'Add {plural_word(state["packages"], "package")}, with {plural_word(state["files"], "file")}'
+                message += f', {gone_note}' if pending_gone else ''
+            else:
+                message = gone_note.capitalize()
             if dry_run:
-                logging.info(f'[dry-run] Would upload {plural_word(state["packages"], "package")}, '
-                             f'{plural_word(state["files"], "file")}, {state["batch_bytes"]} bytes.')
+                logging.info(f'[dry-run] Would upload: {message}, {state["batch_bytes"]} bytes.')
             else:
                 upload_limiter.try_acquire('hf upload limit')
                 safe_upload_directory_as_directory(
@@ -499,18 +589,20 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                     repo_type='dataset',
                     local_directory=batch_dir,
                     path_in_repo='.',
-                    message=f'Add {plural_word(state["packages"], "package")}, '
-                            f'with {plural_word(state["files"], "file")}',
+                    message=message,
                     hf_token=os.environ['HF_TOKEN'],
                 )
             # The batch is committed: its rows become part of the live tables and its files leave the disk.
-            df_posts, df_files = all_posts, all_files
-            live_tags.update(pending_tags)
-            live_categories.update(pending_categories)
+            if pending_posts:
+                df_posts, df_files = all_posts, all_files
+                live_tags.update(pending_tags)
+                live_categories.update(pending_categories)
+            live_gone.update(merge_gone(live_gone, pending_gone))
             for rows in (pending_posts, pending_files):
                 rows.clear()
             pending_tags.clear()
             pending_categories.clear()
+            pending_gone.clear()
             state.update(last_deploy=time.time(), batch_bytes=0, packages=0, files=0)
             _clean_batch()
 
@@ -534,7 +626,8 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                     logging.info(f'Post {post["id"]!r} (attempt {submitted}, {counts["stored"]} stored, '
                                  f'{counts["unavailable"]} gone, {counts["deferred"]} deferred, '
                                  f'{counts["failed"]} failed) ...')
-                    inflight.append((post, pool.submit(process_post, post, staging_root, disabled, strikes)))
+                    inflight.append((post, pool.submit(process_post, post, staging_root, disabled, strikes,
+                                                       live_gone.get(post['id']))))
 
         def _abandon():
             for _, future in inflight:
@@ -552,10 +645,12 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             try:
                 result = future.result()
             except PackageDeferred as err:
+                _note_gone(post, getattr(err, 'gone_hosts', None))
                 logging.warning(f'Post {post["id"]!r} left for the next run - {err}')
                 counts['deferred'] += 1
                 continue
             except PackageUnavailable as err:
+                _note_gone(post, getattr(err, 'gone_hosts', None))
                 logging.warning(f'Post {post["id"]!r} is gone - {err}')
                 counts['unavailable'] += 1
                 dead_streak += 1
@@ -567,6 +662,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                     break
                 continue
             except Exception as err:
+                _note_gone(post, getattr(err, 'gone_hosts', None))
                 logging.error(f'Post {post["id"]!r} not stored - {err!r}')
                 counts['failed'] += 1
                 failed_ids.append(post['id'])
@@ -579,6 +675,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 continue
             dead_streak = fail_streak = 0
 
+            _note_gone(post, result['gone_hosts'])
             adopt_staged(result['stage'], batch_dir)
             file_ids = []
             for member, size in zip(result['members'], result['sizes']):

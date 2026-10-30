@@ -26,6 +26,8 @@ from .base import DownloadError, TIMEOUT, safe_local_name, stream_to_file
 _API = 'https://g.api.mega.co.nz/cs'
 #: Answers that say the link is permanently unusable: not found, blocked, no access, expired, bad handle.
 _GONE_CODES = {-9, -16, -11, -8, -2}
+#: How each of those answers reads: -16 is a takedown by Mega, -11 no access, -8 an expired link.
+_GONE_KINDS = {-9: 'deleted', -2: 'deleted', -16: 'takedown', -11: 'private', -8: 'expired'}
 _EOVERQUOTA = -17
 _EAGAIN = -3
 
@@ -87,7 +89,8 @@ def _ask_api(handle: str) -> dict:
             continue
         if isinstance(answer, int):
             if answer in _GONE_CODES:
-                raise DownloadError(f'mega: {handle} is gone (error {answer})', gone=True)
+                raise DownloadError(f'mega: {handle} is gone (error {answer})', gone=True,
+                                    kind=_GONE_KINDS.get(answer, 'deleted'))
             if answer == _EOVERQUOTA:
                 raise DownloadError('mega: transfer quota exceeded', blocked=True)
             raise DownloadError(f'mega: the API answered error {answer}', retryable=answer == _EAGAIN)

@@ -16,6 +16,7 @@ from .base import (DownloadError, Pacer, filename_from_response, get, get_plain_
 _PACER = Pacer(1.0)
 _QUOTA = ('too many users', 'many accesses', 'quota exceeded', 'unusual traffic', 'download quota')
 _GONE = ('request access', 'you need access', 'sign in', 'not found', 'permission', 'does not exist')
+_PRIVATE = ('request access', 'you need access', 'sign in', 'permission')
 
 
 def parse_file_id(url: str):
@@ -43,5 +44,7 @@ def download_googledrive(url: str, output_dir: str) -> str:
     if any(word in text for word in _QUOTA):
         raise DownloadError('googledrive: download quota exceeded', blocked=True)
     if resp.status_code in (401, 403, 404) or any(word in text for word in _GONE):
-        raise DownloadError(f'googledrive: file {file_id} is gone or private (HTTP {resp.status_code})', gone=True)
+        private = resp.status_code in (401, 403) or any(word in text for word in _PRIVATE)
+        raise DownloadError(f'googledrive: file {file_id} is gone or private (HTTP {resp.status_code})', gone=True,
+                            kind='private' if private else 'deleted')
     raise DownloadError(f'googledrive: unexpected answer HTTP {resp.status_code}', retryable=True)

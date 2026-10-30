@@ -16,14 +16,17 @@ class DownloadError(Exception):
     ``retryable`` marks a failure that is likely to pass on a second attempt, such as a body cut
     short, as opposed to a removed share or a transfer too slow to be worth repeating. ``gone``
     marks a link the host says no longer exists, which is an expected end for an old post rather
-    than a fault, so it never counts as one. ``blocked`` marks a host that is refusing this run as a
-    whole, so asking it again for the next post would only waste another transfer. ``slow`` marks a
-    transfer abandoned for crawling along: one can be a bad file, so the caller counts them per host.
+    than a fault, so it never counts as one; ``kind`` then says how it is gone (``deleted``,
+    ``takedown`` by the host, ``private`` or ``expired``) for the record kept of dead links.
+    ``blocked`` marks a host that is refusing this run as a whole, so asking it again for the next
+    post would only waste another transfer. ``slow`` marks a transfer abandoned for crawling along:
+    one can be a bad file, so the caller counts them per host.
     """
 
     def __init__(self, message: str, retryable: bool = False, gone: bool = False, blocked: bool = False,
-                 slow: bool = False):
+                 slow: bool = False, kind: str = 'deleted'):
         super().__init__(message)
+        self.kind = kind
         self.retryable = retryable
         self.gone = gone
         self.blocked = blocked
