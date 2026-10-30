@@ -254,6 +254,8 @@ class TestSync:
         monkeypatch.setattr(st, '_read_table', lambda c, f, repo, name: tables.get((repo, name)))
         monkeypatch.setattr(st, 'get_download_session', lambda: None)
         monkeypatch.setattr(st, 'delete_detached_cache', lambda: None)
+        self.backend = []
+        monkeypatch.setattr(st, 'configure_hf_http_backend', lambda **kw: self.backend.append(kw))
 
         def fake_upload(local_directory, message, **kw):
             dest = tmp_path / f'upload{len(uploads)}'
@@ -333,6 +335,10 @@ class TestSync:
         rows = self._rows()
         uploads = self._run(tmp_path, monkeypatch, rows, fail_ids={'https://s/n01'}, max_posts=1)
         assert uploads == []  # the one attempt allowed was spent on the failing post
+
+    def test_hub_requests_get_a_timeout(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, self._rows(), dry_run=True)
+        assert self.backend == [{'timeout': 300}]
 
     def test_max_posts_and_dry_run(self, tmp_path, monkeypatch):
         assert len(self._run(tmp_path, monkeypatch, self._rows(), max_posts=1)) == 1

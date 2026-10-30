@@ -53,7 +53,7 @@ from hfutils.operate import get_hf_client, get_hf_fs
 from pyrate_limiter import Duration, Limiter, Rate
 
 from inf.utils.duration import duration_type
-from inf.utils.safe import safe_upload_directory_as_directory
+from inf.utils.safe import configure_hf_http_backend, safe_upload_directory_as_directory
 from inf.utils.archive_safety import ArchiveUnsafe, check_archive_members, validate_tree
 from .hosts import HOSTS, DownloadError, get_download_session
 from .index import _read_table
@@ -237,6 +237,8 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
          max_consecutive_failures: int = _MAX_CONSECUTIVE_FAILURES):
     start_time = time.time()
     delete_detached_cache()
+    # Without a timeout a stalled hub request blocks for about sixteen minutes, which is how a run was lost once.
+    configure_hf_http_backend(timeout=300)
     upload_limiter = Limiter(Rate(1, int(math.ceil(Duration.SECOND * hf_upload_interval))), max_delay=1 << 32)
 
     hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN'])

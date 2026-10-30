@@ -35,7 +35,7 @@ from hfutils.operate import get_hf_client, get_hf_fs
 from pyquery import PyQuery as pq
 
 from inf.utils.duration import duration_type
-from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
+from inf.utils.safe import configure_hf_http_backend, safe_hf_hub_download, safe_upload_directory_as_directory
 from inf.utils.session import get_requests_session, srequest
 
 __site_url__ = 'https://cosplaytele.com'
@@ -194,6 +194,8 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, deploy_span
          max_empty_pages: int = 10, dry_run: bool = False):
     start_time = time.time()
     delete_detached_cache()
+    # Without a timeout a stalled hub request blocks for about sixteen minutes, which is how a run was lost once.
+    configure_hf_http_backend(timeout=300)
 
     def _timeout():
         return max_time_limit is not None and start_time + max_time_limit < time.time()

@@ -170,6 +170,8 @@ class TestSync:
         monkeypatch.setattr(ix, 'get_hf_fs', lambda **kw: None)
         monkeypatch.setattr(ix, '_read_table', lambda c, f, repo, name: tables.get(name))
         monkeypatch.setattr(ix, 'delete_detached_cache', lambda: None)
+        self.backend = []
+        monkeypatch.setattr(ix, 'configure_hf_http_backend', lambda **kw: self.backend.append(kw))
         monkeypatch.setattr(ix, 'AOClient', lambda: fake)
 
         def fake_upload(local_directory, message, **kw):
@@ -223,6 +225,10 @@ class TestSync:
     def test_dry_run_uploads_nothing(self, tmp_path, monkeypatch):
         uploads, _ = self._run(tmp_path, monkeypatch, [1, 2], [1, 2, 3], dry_run=True)
         assert uploads == []
+
+    def test_hub_requests_get_a_timeout(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, [1], [1, 2], dry_run=True)
+        assert self.backend == [{'timeout': 300}]
 
 
 @pytest.mark.unittest

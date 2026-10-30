@@ -66,6 +66,8 @@ def world(tmp_path, monkeypatch):
 
     ctx = Ctx()
     ctx.calls, ctx.uploads, ctx.good_host = calls, uploads, good_host
+    ctx.backend = []
+    monkeypatch.setattr(st, 'configure_hf_http_backend', lambda **kw: ctx.backend.append(kw))
     ctx.tables = {}
 
     class Client:
@@ -181,6 +183,12 @@ class TestSync:
         world.setup([1, 2], [])
         world.run(dry_run=True)
         assert world.uploads == []
+
+    def test_hub_requests_get_a_timeout(self, world):
+        # without one a stalled hub request blocks for about sixteen minutes
+        world.setup([1], [])
+        world.run(dry_run=True)
+        assert world.backend == [{'timeout': 300}]
 
     def test_max_posts_counts_attempts(self, world):
         world.setup([1, 2, 3, 4], [])

@@ -73,7 +73,7 @@ from pyrate_limiter import Duration, Limiter, Rate
 
 from inf.utils.archive_safety import ArchiveUnsafe, check_archive_members, validate_tree
 from inf.utils.duration import duration_type
-from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
+from inf.utils.safe import configure_hf_http_backend, safe_hf_hub_download, safe_upload_directory_as_directory
 from inf.utils.transfer import DownloadError
 from .hosts import HOSTS
 from .passwords import WrongPassword, find_password
@@ -86,7 +86,7 @@ _HOST_ATTEMPTS = 2
 _SLOW_STRIKES = 2
 _MAX_CONSECUTIVE_FAILURES = 10
 _MAX_DEAD_STREAK = 200
-_MAX_BATCH_BYTES = int(13.5 * 1024 ** 3)
+_MAX_BATCH_BYTES = 6 * 1024 ** 3
 
 
 class PackageUnavailable(Exception):
@@ -407,6 +407,8 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
          max_dead_streak: int = _MAX_DEAD_STREAK, workers: int = 1):
     start_time = time.time()
     delete_detached_cache()
+    # Without a timeout a stalled hub request blocks for about sixteen minutes, which is how a run was lost once.
+    configure_hf_http_backend(timeout=300)
     upload_limiter = Limiter(Rate(120, int(math.ceil(Duration.HOUR * 1))), max_delay=1 << 32)
 
     hf_client = get_hf_client(hf_token=os.environ['HF_TOKEN'])
@@ -608,7 +610,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                    'Use "none" to disable.')
 @click.option('-d', '--deploy-span', type=duration_type(), default=5 * 60, show_default=True,
               help='Minimum interval between commits.')
-@click.option('-B', '--max-batch-gib', type=float, default=13.5, show_default=True,
+@click.option('-B', '--max-batch-gib', type=float, default=6.0, show_default=True,
               help='Commit as soon as the batch holds this many GiB of packages.')
 @click.option('-n', '--max-posts', type=int, default=None,
               help='Attempt at most this many posts, stored, gone or failed, for trial runs.')
