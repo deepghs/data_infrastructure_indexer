@@ -247,6 +247,25 @@ class TestListingDifferential:
             sf.parse_7z_listing(evil)
         assert 'New One' in str(exc.value) and 'New Two' in str(exc.value)
 
+    @pytest.mark.parametrize('field', [
+        'NT Security = 01', 'Split Before = -', 'Split After = -', 'Copy Link = Post/Pic/1.jpg',
+    ])
+    def test_fields_seen_on_real_rar_listings_are_understood(self, field):
+        listing = LISTING.replace('Size = 3', f'Size = 3\n{field}', 1)
+        _, entries = sf.parse_7z_listing(listing)
+        assert sf.entry_problem(entries[0]) is None
+
+    @pytest.mark.parametrize('target', ['../../etc/passwd', '/etc/passwd', 'a/../../b'])
+    def test_a_copy_link_may_not_point_outside(self, target):
+        listing = LISTING.replace('Size = 3', f'Size = 3\nCopy Link = {target}', 1)
+        _, entries = sf.parse_7z_listing(listing)
+        assert 'copy link target' in sf.entry_problem(entries[0])
+
+    def test_device_fields_are_still_refused(self):
+        listing = LISTING.replace('Size = 3', 'Size = 3\nDevice Major = 1', 1)
+        with pytest.raises(sf.ArchiveUnsafe, match='Device Major'):
+            sf.parse_7z_listing(listing)
+
     def test_ntfs_alternate_stream_field_is_understood(self):
         # 7z reports this for RAR members carrying an NTFS alternate data stream
         listing = LISTING.replace('Size = 3', 'Size = 3\nAlternate Stream = -', 1)

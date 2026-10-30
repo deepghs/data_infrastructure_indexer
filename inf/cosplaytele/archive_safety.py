@@ -51,8 +51,11 @@ _KNOWN_FIELDS = {
     'Encrypted', 'Comment', 'CRC', 'Method', 'Characteristics', 'Host OS', 'Version',
     'Volume Index', 'Offset', 'Symbolic Link', 'Hard Link', 'Block', 'Solid', 'Position',
     'Link', 'Checksum', 'Code Page', 'Big Endian', 'Reparse', 'Archive', 'Warnings', 'Errors',
-    'Alternate Stream',
+    'Alternate Stream', 'Copy Link', 'NT Security', 'Split Before', 'Split After',
+    'Aux', 'Deleted', 'Tree', 'SHA-1', 'SHA-256', 'Anti', 'Short Name', 'User', 'Group',
+    'User ID', 'Group ID', 'Error Type', 'Warning Flags', 'Unconfirmed', 'Volume',
 }
+# Device and inode fields are left out on purpose: an archive holding a device node should be refused.
 
 
 class ArchiveUnsafe(Exception):
@@ -78,6 +81,10 @@ def entry_problem(entry: Dict) -> Optional[str]:
         return problem
     if entry.get('symlink') or entry.get('hardlink'):
         return 'link'
+    # A RAR5 "file copy" duplicates another member of the same archive. It is how RAR deduplicates,
+    # not a filesystem link, so it is accepted as long as what it points at is a safe path too.
+    if entry.get('copy_link') and path_problem(entry['copy_link']):
+        return f'copy link target: {path_problem(entry["copy_link"])}'
     match = _UNIX_MODE.search(entry.get('attributes') or '')
     if match and match.group(1) in _SPECIAL_TYPES:
         return f'special file type {match.group(1)!r}'
@@ -140,6 +147,7 @@ def parse_7z_listing(text: str) -> Tuple[Dict[str, str], List[Dict]]:
             'attributes': fields.get('Attributes', ''),
             'symlink': bool(fields.get('Symbolic Link')),
             'hardlink': bool(fields.get('Hard Link')),
+            'copy_link': fields.get('Copy Link') or None,
         })
     if unknown:
         raise ArchiveUnsafe(f'Unknown fields in archive listing: {sorted(unknown)!r}.')
