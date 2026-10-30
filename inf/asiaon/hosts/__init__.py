@@ -14,11 +14,12 @@ terabox wants a human verification, vikingfile a Turnstile challenge, rapidgator
 workupload a human check, and the old file hosts are shut down. Posts linked only from those stay
 unstored for a later attempt.
 """
+import re
 from typing import Callable, List, NamedTuple
 
 from .base import DownloadError
 from .gofile import download_gofile
-from .googledrive import download_googledrive
+from .googledrive import download_googledrive, parse_file_id as parse_drive_id
 from .mediafire import download_mediafire
 from .mega import download_mega, parse_link as parse_mega_link
 from .pixeldrain import download_pixeldrain
@@ -37,10 +38,10 @@ class Host(NamedTuple):
 
 
 HOSTS: List[Host] = [
-    Host('mediafire', download_mediafire),
-    Host('pixeldrain', download_pixeldrain),
-    Host('gofile', download_gofile),
-    Host('googledrive', download_googledrive),
+    Host('mediafire', download_mediafire, lambda url: 'mediafire.com' in url),
+    Host('pixeldrain', download_pixeldrain, lambda url: re.search(r'pixeldrain\.com/u/[\w-]+', url) is not None),
+    Host('gofile', download_gofile, lambda url: re.search(r'gofile\.io/d/[\w-]+', url) is not None),
+    Host('googledrive', download_googledrive, lambda url: parse_drive_id(url) is not None),
     Host('mega', download_mega, lambda url: parse_mega_link(url) is not None),
 ]
 
