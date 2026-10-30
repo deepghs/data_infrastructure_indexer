@@ -7,9 +7,12 @@ stored from the first host whose package downloads *and* unpacks.
 The order follows what was measured on a runner without a proxy: mediafire is by far the fastest and has
 no byte limit, though Cloudflare turns away about a fifth of requests; pixeldrain is dependable but
 throttled to a crawl after roughly seven gigabytes; gofile works but only when its folder holds a
-single archive; Google Drive is where most of the surviving old posts live. Hosts nothing here can fetch
-(mega, terabox, vikingfile, buzzheavier, rapidgator, workupload and the dead file hosts) are left out, so
-posts linked only from those stay unstored for a later attempt.
+single archive; Google Drive is where most of the surviving old posts live; mega works but only a
+handful of old links are still alive and it is slow. Hosts nothing here can fetch are left out, each for
+a measured reason: buzzheavier answers every runner request with 403 whatever the browser profile,
+terabox wants a human verification, vikingfile a Turnstile challenge, rapidgator a premium account,
+workupload a human check, and the old file hosts are shut down. Posts linked only from those stay
+unstored for a later attempt.
 """
 from typing import Callable, List, NamedTuple
 
@@ -17,6 +20,7 @@ from .base import DownloadError
 from .gofile import download_gofile
 from .googledrive import download_googledrive
 from .mediafire import download_mediafire
+from .mega import download_mega
 from .pixeldrain import download_pixeldrain
 
 
@@ -34,6 +38,7 @@ HOSTS: List[Host] = [
     Host('pixeldrain', download_pixeldrain),
     Host('gofile', download_gofile),
     Host('googledrive', download_googledrive),
+    Host('mega', download_mega),
 ]
 
 __all__ = ['DownloadError', 'Host', 'HOSTS']

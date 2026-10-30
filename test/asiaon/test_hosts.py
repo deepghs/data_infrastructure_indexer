@@ -2,7 +2,7 @@ import base64
 
 import pytest
 
-from inf.asiaon.hosts import HOSTS, base, gofile, googledrive, mediafire
+from inf.asiaon.hosts import HOSTS, base, gofile, googledrive, mediafire, mega
 
 
 class Resp:
@@ -13,12 +13,12 @@ class Resp:
 @pytest.mark.unittest
 class TestRegistry:
     def test_order_follows_what_was_measured(self):
-        assert [h.name for h in HOSTS] == ['mediafire', 'pixeldrain', 'gofile', 'googledrive']
+        assert [h.name for h in HOSTS] == ['mediafire', 'pixeldrain', 'gofile', 'googledrive', 'mega']
         assert [h.column for h in HOSTS][0] == 'mediafire_download_url'
 
     def test_hosts_that_cannot_be_fetched_are_absent(self):
         names = {h.name for h in HOSTS}
-        assert not names & {'mega', 'terabox', 'vikingfile', 'buzzheavier', 'rapidgator', 'workupload'}
+        assert not names & {'terabox', 'vikingfile', 'buzzheavier', 'rapidgator', 'workupload'}
 
 
 @pytest.mark.unittest
@@ -100,3 +100,89 @@ class TestBase:
 
     def test_a_good_answer_passes(self):
         base.check_file_response(Resp({'Content-Type': 'application/zip'}), 'host', 'x')
+
+
+K = 'T4bK7JREgkxuIaAF0Vj0qIejocbcZ_rw5BBH5tzIhPY'
+
+
+@pytest.mark.unittest
+class TestMega:
+    KEY_WORDS = [0x01020304, 0x05060708, 0x090A0B0C, 0x0D0E0F10, 0x11121314, 0x15161718, 0x191A1B1C, 0x1D1E1F20]
+
+    def _key(self):
+        import struct
+        raw = struct.pack('>8I', *self.KEY_WORDS)
+        return base64.urlsafe_b64encode(raw).decode().rstrip('=')
+
+    @pytest.mark.parametrize('url, expected', [
+        (f'https://mega.nz/file/UZRACZqb#{K}', ('UZRACZqb', K)),
+        (f'https://mega.nz/#!UZRACZqb!{K}', ('UZRACZqb', K)),
+        (f'https://mega.nz/folder/UZRACZqb#{K}', None),
+        (f'https://mega.nz/#F!UZRACZqb!{K}', None),
+        ('https://example.com/file/x', None),
+    ])
+    def test_link_parsing(self, url, expected):
+        assert mega.parse_link(url) == expected
+
+    def test_key_folding(self):
+        import struct
+        aes_key, nonce = mega.fold_key(self._key())
+        w = self.KEY_WORDS
+        assert aes_key == struct.pack('>4I', w[0] ^ w[4], w[1] ^ w[5], w[2] ^ w[6], w[3] ^ w[7])
+        assert nonce == struct.pack('>4I', w[4], w[5], 0, 0)
+
+    def test_streamed_decryption_roundtrip_and_attribute_name(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        aes_key, nonce = mega.fold_key(self._key())
+        plain = bytes(range(256)) * 400  # not a multiple of the AES block size on purpose
+        plain += b'tail'
+        cipher = Cipher(algorithms.AES(aes_key), modes.CTR(nonce)).encryptor().update(plain)
+
+        class Raw:
+            def iter_content(self, chunk_size):
+                for i in range(0, len(cipher), 777):  # chunks that cut across AES blocks
+                    yield cipher[i:i + 777]
+
+            def close(self):
+                pass
+
+        dec = Cipher(algorithms.AES(aes_key), modes.CTR(nonce)).decryptor()
+        out = b''.join(mega._DecryptingResponse(Raw(), dec, len(plain)).iter_content())
+        assert out == plain
+
+        meta = b'MEGA{"n":"Pack Vol.1.zip"}'
+        meta += b'\x00' * (-len(meta) % 16)
+        enc = Cipher(algorithms.AES(aes_key), modes.CBC(b'\x00' * 16)).encryptor().update(meta)
+        assert mega.decrypt_name(base64.urlsafe_b64encode(enc).decode().rstrip('='), aes_key) == 'Pack Vol.1.zip'
+        assert mega.decrypt_name('not base64 at all!', aes_key) is None
+
+    @pytest.mark.parametrize('code, gone, blocked', [
+        (-9, True, False), (-16, True, False), (-17, False, True), (-6, False, False),
+    ])
+    def test_api_error_codes(self, monkeypatch, code, gone, blocked):
+        class R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return [code]
+
+        monkeypatch.setattr(mega.requests, 'post', lambda *a, **k: R())
+        monkeypatch.setattr(mega.time, 'sleep', lambda s: None)
+        with pytest.raises(base.DownloadError) as exc:
+            mega._ask_api('UZRACZqb')
+        assert (exc.value.gone, exc.value.blocked) == (gone, blocked)
+
+    def test_eagain_is_retried(self, monkeypatch):
+        answers = iter([[-3], [-3], [{'g': 'https://x', 's': 5, 'at': ''}]])
+
+        class R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return next(answers)
+
+        monkeypatch.setattr(mega.requests, 'post', lambda *a, **k: R())
+        monkeypatch.setattr(mega.time, 'sleep', lambda s: None)
+        assert mega._ask_api('UZRACZqb')['s'] == 5
