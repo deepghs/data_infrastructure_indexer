@@ -191,6 +191,43 @@ def _list_with_7z(archive_file: str, password: Optional[str]) -> Tuple[Dict[str,
     raise ArchiveUnsafe(f'Could not list archive (7z exit {proc.returncode}): {proc.stderr.strip()[:200]!r}')
 
 
+#: RAR5 redirect record types: 1 and 2 are symbolic links, 3 a junction, 4 a hard link, 5 a copy of another member.
+_REDIR_SYMLINKS = (1, 2, 3)
+_REDIR_HARDLINK = 4
+_REDIR_COPY = 5
+
+
+def _list_with_rarfile(archive_file: str, password: Optional[str]) -> List[Dict]:
+    """
+    List a RAR through ``rarfile``, which drives the ``unrar`` tool and answers with structured entries.
+
+    Used when ``7z`` cannot list an archive: 7-Zip 23.01 was seen segfaulting on RAR5 packages that 26.00
+    lists without trouble, and the version on a runner is not something a job controls.
+    """
+    import rarfile
+
+    try:
+        rf = rarfile.RarFile(archive_file)
+        if password:
+            rf.setpassword(password)
+        infos = rf.infolist()
+    except Exception as err:
+        raise ArchiveUnsafe(f'rarfile could not list the archive either: {err!r}') from err
+
+    entries = []
+    for info in infos:
+        redirect = getattr(info, 'file_redir', None)
+        kind = redirect[0] if redirect else None
+        entries.append({
+            'path': info.filename,
+            'attributes': '',
+            'symlink': bool(info.is_symlink()) or kind in _REDIR_SYMLINKS,
+            'hardlink': kind == _REDIR_HARDLINK,
+            'copy_link': redirect[2] if kind == _REDIR_COPY else None,
+        })
+    return entries
+
+
 def check_signature(archive_file: str, extension: str) -> None:
     """Require the file to start with the signature its extension promises."""
     signatures = _SIGNATURES.get(extension)
@@ -221,8 +258,14 @@ def check_archive_members(archive_file: str, password: Optional[str]) -> int:
     else:
         if not shutil.which('7z'):
             raise ArchiveUnsafe('7z is not installed, so the member list cannot be checked.')
-        header, entries = _list_with_7z(archive_file, password)
-        if header.get('Type') not in _LISTED_TYPES[extension]:
+        try:
+            header, entries = _list_with_7z(archive_file, password)
+        except ArchiveUnsafe as err:
+            if extension != 'rar' or 'Could not list archive' not in str(err):
+                raise
+            logging.warning(f'{err} Listing with rarfile instead.')
+            header, entries = None, _list_with_rarfile(archive_file, password)
+        if header is not None and header.get('Type') not in _LISTED_TYPES[extension]:
             raise ArchiveUnsafe(f'Archive is a {header.get("Type")!r}, not the {extension} its name claims.')
 
     if not entries:

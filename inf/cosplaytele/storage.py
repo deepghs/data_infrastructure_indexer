@@ -54,7 +54,7 @@ from pyrate_limiter import Duration, Limiter, Rate
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_upload_directory_as_directory
-from .archive_safety import ArchiveUnsafe, check_archive_members, validate_tree
+from inf.utils.archive_safety import ArchiveUnsafe, check_archive_members, validate_tree
 from .hosts import HOSTS, DownloadError, get_download_session
 from .index import _read_table
 
@@ -89,7 +89,7 @@ def unpack_package(archive_file: str, directory: str, password: Optional[str]) -
     Unpack ``archive_file`` into ``directory`` and return the number of files.
 
     The member list is checked before extracting and the tree after, see
-    :mod:`inf.cosplaytele.archive_safety`; a package only counts as unpacked when both pass and it
+    :mod:`inf.utils.archive_safety`; a package only counts as unpacked when both pass and it
     produced at least one file.
     """
     try:

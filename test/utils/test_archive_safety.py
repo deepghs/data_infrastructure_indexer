@@ -4,7 +4,7 @@ import zipfile
 
 import pytest
 
-from inf.cosplaytele import archive_safety as sf
+from inf.utils import archive_safety as sf
 from inf.cosplaytele import storage as st
 
 LISTING = """
@@ -319,3 +319,81 @@ class TestListingRetries:
         with pytest.raises(sf.ArchiveUnsafe, match='exit -11'):
             sf._list_with_7z('a.rar', None)
         assert len(calls) == sf._LIST_ATTEMPTS
+
+
+class FakeRarInfo:
+    def __init__(self, filename, symlink=False, redir=None):
+        self.filename, self._symlink, self.file_redir = filename, symlink, redir
+
+    def is_symlink(self):
+        return self._symlink
+
+
+def _fake_rarfile(monkeypatch, infos=None, error=None):
+    import rarfile
+
+    class FakeRarFile:
+        def __init__(self, path):
+            if error:
+                raise error
+
+        def setpassword(self, password):
+            pass
+
+        def infolist(self):
+            return infos
+
+    monkeypatch.setattr(rarfile, 'RarFile', FakeRarFile)
+
+
+@pytest.mark.unittest
+class TestRarfileFallback:
+    RAR5 = b'Rar!\x1a\x07\x01\x00' + b'\x00' * 32
+
+    def _crashing_7z(self, tmp_path, monkeypatch):
+        f = tmp_path / 'a.rar'
+        f.write_bytes(self.RAR5)
+        monkeypatch.setattr(sf.shutil, 'which', lambda name: '/usr/bin/7z')
+        monkeypatch.setattr(sf.time, 'sleep', lambda s: None)
+
+        class Proc:
+            returncode, stdout, stderr = -11, '', ''
+
+        monkeypatch.setattr(sf.subprocess, 'run', lambda *a, **k: Proc())
+        return str(f)
+
+    def test_a_7z_that_cannot_list_hands_over_to_rarfile(self, tmp_path, monkeypatch):
+        path = self._crashing_7z(tmp_path, monkeypatch)
+        _fake_rarfile(monkeypatch, [FakeRarInfo('P/1.jpg'), FakeRarInfo('P/2.jpg')])
+        assert sf.check_archive_members(path, None) == 2
+
+    def test_unsafe_members_are_still_refused_through_the_fallback(self, tmp_path, monkeypatch):
+        path = self._crashing_7z(tmp_path, monkeypatch)
+        for bad, match in [(FakeRarInfo('P/x', symlink=True), 'link'), (FakeRarInfo('../x'), 'parent directory'),
+                           (FakeRarInfo('P/x', redir=(1, 0, '/etc')), 'link'),
+                           (FakeRarInfo('P/x', redir=(4, 0, 'a')), 'link'),
+                           (FakeRarInfo('P/x', redir=(5, 0, '../../etc/passwd')), 'copy link target')]:
+            _fake_rarfile(monkeypatch, [FakeRarInfo('P/ok.jpg'), bad])
+            with pytest.raises(sf.ArchiveUnsafe, match=match):
+                sf.check_archive_members(path, None)
+
+    def test_a_file_copy_inside_the_archive_is_accepted(self, tmp_path, monkeypatch):
+        path = self._crashing_7z(tmp_path, monkeypatch)
+        _fake_rarfile(monkeypatch, [FakeRarInfo('P/1.jpg'), FakeRarInfo('P/copy.jpg', redir=(5, 0, 'P/1.jpg'))])
+        assert sf.check_archive_members(path, None) == 2
+
+    def test_when_rarfile_cannot_list_it_either_the_archive_is_refused(self, tmp_path, monkeypatch):
+        path = self._crashing_7z(tmp_path, monkeypatch)
+        _fake_rarfile(monkeypatch, error=RuntimeError('no unrar'))
+        with pytest.raises(sf.ArchiveUnsafe, match='rarfile could not list'):
+            sf.check_archive_members(path, None)
+
+    def test_the_fallback_is_not_used_for_other_reasons_to_refuse(self, tmp_path, monkeypatch):
+        f = tmp_path / 'a.rar'
+        f.write_bytes(self.RAR5)
+        monkeypatch.setattr(sf.shutil, 'which', lambda name: '/usr/bin/7z')
+        monkeypatch.setattr(sf, '_list_with_7z',
+                            lambda *a: sf.parse_7z_listing(LISTING.replace('Type = Rar5', 'Type = zip')))
+        _fake_rarfile(monkeypatch, [FakeRarInfo('P/1.jpg')])
+        with pytest.raises(sf.ArchiveUnsafe, match='not the rar'):
+            sf.check_archive_members(str(f), None)
