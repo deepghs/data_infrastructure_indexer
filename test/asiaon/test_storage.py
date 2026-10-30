@@ -383,3 +383,77 @@ class TestUnpackPackage:
         out = tmp_path / 'out'
         out.mkdir()
         assert st.unpack_package(self._zip(tmp_path, None), str(out), None) == 2
+
+
+@pytest.mark.unittest
+class TestParallelPipeline:
+    def _final(self, world):
+        final = world.uploads[-1][1]
+        posts = pd.read_parquet(final / 'posts.parquet')
+        files = pd.read_parquet(final / 'files.parquet').sort_values('id')
+        return posts, files
+
+    def test_workers_give_exactly_the_tables_a_sequential_run_gives(self, world):
+        world.setup(list(range(1, 13)), [1, 2])
+        world.run(workers=1)
+        seq_posts, seq_files = self._final(world)
+
+        world.setup(list(range(1, 13)), [1, 2])
+        world.run(workers=4)
+        par_posts, par_files = self._final(world)
+
+        key = ['dbid', 'file_ids', 'package_file', 'file_count']
+        assert par_posts[key].reset_index(drop=True).equals(seq_posts[key].reset_index(drop=True))
+        cols = ['id', 'post_id', 'file_in_package', 'file_size']
+        assert par_files[cols].reset_index(drop=True).equals(seq_files[cols].reset_index(drop=True))
+
+    def test_parallel_batches_carry_only_their_own_packages(self, world):
+        world.setup(list(range(1, 13)), [])
+        world.run(workers=3, max_batch_bytes=1)
+        seen = []
+        for _, path in world.uploads:
+            names = tars(path)
+            assert not set(names) & set(seen)  # no package is committed twice
+            seen += names
+        assert sorted(seen) == sorted(f'post-{d}.tar' for d in range(1, 13))
+
+    def test_a_failure_among_parallel_posts_does_not_lose_the_others(self, world, monkeypatch):
+        def host(url, out):
+            if url.endswith('/5'):
+                raise requests.ConnectionError('reset')
+            return world.good_host('mediafire')(url, out)
+
+        world.setup(list(range(1, 9)), [])
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        world.run(workers=3, max_consecutive_failures=5)
+        posts, _ = TestParallelPipeline._final(self, world)
+        assert sorted(posts['dbid']) == [1, 2, 3, 4, 6, 7, 8]
+
+
+@pytest.mark.unittest
+class TestSlowHosts:
+    def _slow_then_fine(self, world, monkeypatch, slow_for):
+        asked = []
+
+        def host(url, out):
+            asked.append(url)
+            if len(asked) <= slow_for:
+                raise DownloadError('Too slow', slow=True)
+            return world.good_host('mediafire')(url, out)
+
+        world.setup([1, 2, 3, 4], [])
+        world.tables[('idx', 'posts.parquet')] = pd.DataFrame([
+            index_row(d, pixeldrain_download_url=f'https://pd/{d}') for d in (1, 2, 3, 4)])
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host), Host('pixeldrain', world.good_host('pixeldrain'))])
+        return asked
+
+    def test_one_slow_transfer_does_not_set_a_host_aside(self, world, monkeypatch):
+        asked = self._slow_then_fine(world, monkeypatch, slow_for=1)
+        world.run()
+        assert len(asked) == 4  # asked for every post, it was only one bad file
+
+    def test_two_slow_transfers_set_the_host_aside_for_the_run(self, world, monkeypatch):
+        asked = self._slow_then_fine(world, monkeypatch, slow_for=99)
+        world.run()
+        assert len(asked) == 2  # two strikes, and the other two posts never asked it
+        assert [c[0] for c in world.calls] == ['pixeldrain'] * 4

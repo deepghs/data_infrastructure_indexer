@@ -50,7 +50,10 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Set, Tuple
 
 import click
@@ -79,6 +82,8 @@ mimetypes.add_type('image/webp', '.webp')
 
 #: Attempts per host for a failure that is likely to be momentary; each retry starts from a fresh link.
 _HOST_ATTEMPTS = 2
+#: Abandoned slow transfers after which a host is set aside for the rest of the run.
+_SLOW_STRIKES = 2
 _MAX_CONSECUTIVE_FAILURES = 10
 _MAX_DEAD_STREAK = 200
 _MAX_BATCH_BYTES = int(13.5 * 1024 ** 3)
@@ -167,7 +172,8 @@ def usable_url(host, post: Dict) -> Optional[str]:
     return url
 
 
-def fetch_package(post: Dict, work_dir: str, disabled: Set[str]) -> Tuple[str, str]:
+def fetch_package(post: Dict, work_dir: str, disabled: Set[str],
+                  strikes: Optional[Dict[str, int]] = None) -> Tuple[str, str]:
     """
     Download and unpack a post's package from the first host that delivers.
 
@@ -201,6 +207,11 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str]) -> Tuple[str, s
                                 f'{err!r}')
                 if isinstance(err, DownloadError) and err.blocked:
                     disabled.add(host.name)
+                if isinstance(err, DownloadError) and err.slow and strikes is not None:
+                    strikes[host.name] = strikes.get(host.name, 0) + 1
+                    if strikes[host.name] >= _SLOW_STRIKES:
+                        logging.warning(f'{host.name} was too slow {strikes[host.name]} times, setting it aside.')
+                        disabled.add(host.name)
                 verdict = err
                 # A failed attempt may have unpacked part of the archive; the next starts from nothing.
                 shutil.rmtree(unpack_dir, ignore_errors=True)
@@ -236,6 +247,38 @@ def build_package(post_id: str, unpack_dir: str, batch_dir: str) -> Tuple[str, i
     with open(os.path.splitext(tar_file)[0] + '.json', 'w') as f:
         json.dump(meta_data, f)
     return package_file, os.path.getsize(tar_file), len(meta_data['files']), list(meta_data['files'].keys())
+
+
+def process_post(post: Dict, staging_root: str, disabled: Set[str], strikes: Dict[str, int]) -> Dict:
+    """
+    Download, unpack and repack one post, leaving the tar in a staging directory of its own.
+
+    Runs in a worker thread, so nothing here touches the batch or the tables: the tar and its index
+    are built under ``staging_root`` and handed to the main thread, which moves them into the batch
+    once it is this post's turn.
+    """
+    with TemporaryDirectory() as td:
+        host_name, unpack_dir = fetch_package(post, os.path.join(td, 'work'), disabled, strikes)
+        stage = tempfile.mkdtemp(dir=staging_root)
+        try:
+            package_file, package_size, file_count, members = build_package(post['id'], unpack_dir, stage)
+            sizes = [os.path.getsize(os.path.join(unpack_dir, member)) for member in members]
+        except Exception:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+    return {'host': host_name, 'package_file': package_file, 'package_size': package_size,
+            'file_count': file_count, 'members': members, 'sizes': sizes, 'stage': stage}
+
+
+def adopt_staged(stage: str, batch_dir: str) -> None:
+    """Move a staged package into the batch and drop the staging directory."""
+    for root, _, files in os.walk(stage):
+        for name in files:
+            src = os.path.join(root, name)
+            dst = os.path.join(batch_dir, os.path.relpath(src, stage))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+    shutil.rmtree(stage, ignore_errors=True)
 
 
 def _read_table(hf_client, hf_fs, repository: str, filename: str) -> Optional[pd.DataFrame]:
@@ -361,7 +404,7 @@ def _count_terms(live: Dict[str, Dict], pending: Dict[str, Dict], origin: Dict[s
 def sync(index_repository: str, repository: str, max_time_limit: Optional[float] = 5 * 60 * 60,
          deploy_span: float = 5 * 60, max_batch_bytes: int = _MAX_BATCH_BYTES, max_posts: Optional[int] = None,
          dry_run: bool = False, max_consecutive_failures: int = _MAX_CONSECUTIVE_FAILURES,
-         max_dead_streak: int = _MAX_DEAD_STREAK):
+         max_dead_streak: int = _MAX_DEAD_STREAK, workers: int = 1):
     start_time = time.time()
     delete_detached_cache()
     upload_limiter = Limiter(Rate(120, int(math.ceil(Duration.HOUR * 1))), max_delay=1 << 32)
@@ -407,7 +450,9 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
     counts = {'stored': 0, 'failed': 0, 'unavailable': 0}
     failed_ids: List[str] = []
 
-    with TemporaryDirectory() as batch_dir:
+    strikes: Dict[str, int] = {}
+    with TemporaryDirectory() as batch_dir, TemporaryDirectory() as staging_root, \
+            ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
         def _clean_batch():
             for name in os.listdir(batch_dir):
                 path = os.path.join(batch_dir, name)
@@ -454,73 +499,94 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             _clean_batch()
 
         dead_streak, fail_streak = 0, 0
-        for post in candidates:
-            if max_time_limit is not None and start_time + max_time_limit < time.time():
-                logging.info('Time budget used up, stopping.')
-                break
-            if max_posts is not None and sum(counts.values()) >= max_posts:
-                break
+        todo, inflight, submitted, no_more = iter(candidates), deque(), 0, False
 
-            attempt_no = sum(counts.values()) + 1
-            logging.info(f'Post {post["id"]!r} (attempt {attempt_no}, {counts["stored"]} stored, '
-                         f'{counts["unavailable"]} gone, {counts["failed"]} failed) ...')
-            with TemporaryDirectory() as td:
-                try:
-                    host_name, unpack_dir = fetch_package(post, os.path.join(td, 'work'), disabled)
-                    package_file, package_size, file_count, members = build_package(post['id'], unpack_dir, batch_dir)
-                except PackageUnavailable as err:
-                    logging.warning(f'Post {post["id"]!r} is gone - {err}')
-                    counts['unavailable'] += 1
-                    dead_streak += 1
-                    fail_streak = 0
-                    if max_dead_streak and dead_streak >= max_dead_streak:
-                        logging.info(f'{dead_streak} posts in a row with nothing alive, the rest of the list is '
-                                     f'almost certainly dead too, stopping.')
-                        break
-                    continue
-                except Exception as err:
-                    logging.error(f'Post {post["id"]!r} not stored - {err!r}')
-                    counts['failed'] += 1
-                    failed_ids.append(post['id'])
-                    fail_streak += 1
-                    if fail_streak >= max_consecutive_failures:
-                        _deploy(force=True)
-                        raise RuntimeError(f'{fail_streak} posts in a row failed, giving up: '
-                                           f'{failed_ids[-fail_streak:]!r}. Last error: {err!r}') from err
-                    continue
-                dead_streak = fail_streak = 0
+        def _submit_more():
+            nonlocal submitted, no_more
+            while not no_more and len(inflight) < max(workers, 1):
+                if max_time_limit is not None and start_time + max_time_limit < time.time():
+                    logging.info('Time budget used up, no new posts will be started.')
+                    no_more = True
+                elif max_posts is not None and submitted >= max_posts:
+                    no_more = True
+                else:
+                    post = next(todo, None)
+                    if post is None:
+                        no_more = True
+                        continue
+                    submitted += 1
+                    logging.info(f'Post {post["id"]!r} (attempt {submitted}, {counts["stored"]} stored, '
+                                 f'{counts["unavailable"]} gone, {counts["failed"]} failed) ...')
+                    inflight.append((post, pool.submit(process_post, post, staging_root, disabled, strikes)))
 
-                file_ids = []
-                for member in members:
-                    max_file_id += 1
-                    _, ext = os.path.splitext(member)
-                    mimetype, _ = mimetypes.guess_type(member.lower())
-                    pending_files.append({
-                        'id': max_file_id,
-                        'filename': f'{max_file_id}{ext}',
-                        'mimetype': mimetype,
-                        'post_id': post['id'],
-                        'package_file': package_file,
-                        'file_in_package': member,
-                        'file_size': os.path.getsize(os.path.join(unpack_dir, member)),
-                    })
-                    file_ids.append(max_file_id)
-                pending_posts.append({
-                    **post,
-                    'file_count': file_count,
-                    'package_size': package_size,
-                    'package_file': package_file,
-                    'file_ids': json.dumps(file_ids),
+        def _abandon():
+            for _, future in inflight:
+                future.cancel()
+            inflight.clear()
+
+        while True:
+            _submit_more()
+            if not inflight:
+                break
+            post, future = inflight.popleft()
+            try:
+                result = future.result()
+            except PackageUnavailable as err:
+                logging.warning(f'Post {post["id"]!r} is gone - {err}')
+                counts['unavailable'] += 1
+                dead_streak += 1
+                fail_streak = 0
+                if max_dead_streak and dead_streak >= max_dead_streak:
+                    logging.info(f'{dead_streak} posts in a row with nothing alive, the rest of the list is '
+                                 f'almost certainly dead too, stopping.')
+                    _abandon()
+                    break
+                continue
+            except Exception as err:
+                logging.error(f'Post {post["id"]!r} not stored - {err!r}')
+                counts['failed'] += 1
+                failed_ids.append(post['id'])
+                fail_streak += 1
+                if fail_streak >= max_consecutive_failures:
+                    _abandon()
+                    _deploy(force=True)
+                    raise RuntimeError(f'{fail_streak} posts in a row failed, giving up: '
+                                       f'{failed_ids[-fail_streak:]!r}. Last error: {err!r}') from err
+                continue
+            dead_streak = fail_streak = 0
+
+            adopt_staged(result['stage'], batch_dir)
+            file_ids = []
+            for member, size in zip(result['members'], result['sizes']):
+                max_file_id += 1
+                _, ext = os.path.splitext(member)
+                mimetype, _ = mimetypes.guess_type(member.lower())
+                pending_files.append({
+                    'id': max_file_id,
+                    'filename': f'{max_file_id}{ext}',
+                    'mimetype': mimetype,
+                    'post_id': post['id'],
+                    'package_file': result['package_file'],
+                    'file_in_package': member,
+                    'file_size': size,
                 })
-                _count_terms(live_tags, pending_tags, origin_tags, post['tags'])
-                _count_terms(live_categories, pending_categories, origin_categories, post['categories'])
-                exist_post_ids.add(post['id'])
-                state['batch_bytes'] += package_size
-                state['packages'] += 1
-                state['files'] += file_count
-                counts['stored'] += 1
-                logging.info(f'Post {post["id"]!r} stored via {host_name}, {plural_word(file_count, "file")}, '
-                             f'{package_size} bytes.')
+                file_ids.append(max_file_id)
+            pending_posts.append({
+                **post,
+                'file_count': result['file_count'],
+                'package_size': result['package_size'],
+                'package_file': result['package_file'],
+                'file_ids': json.dumps(file_ids),
+            })
+            _count_terms(live_tags, pending_tags, origin_tags, post['tags'])
+            _count_terms(live_categories, pending_categories, origin_categories, post['categories'])
+            exist_post_ids.add(post['id'])
+            state['batch_bytes'] += result['package_size']
+            state['packages'] += 1
+            state['files'] += result['file_count']
+            counts['stored'] += 1
+            logging.info(f'Post {post["id"]!r} stored via {result["host"]}, '
+                         f'{plural_word(result["file_count"], "file")}, {result["package_size"]} bytes.')
             _deploy()
         _deploy(force=True)
 
@@ -546,12 +612,14 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
               help='Commit as soon as the batch holds this many GiB of packages.')
 @click.option('-n', '--max-posts', type=int, default=None,
               help='Attempt at most this many posts, stored, gone or failed, for trial runs.')
+@click.option('-w', '--workers', type=int, default=3, show_default=True,
+              help='Posts downloaded, unpacked and repacked at the same time.')
 @click.option('--max-dead-streak', type=int, default=_MAX_DEAD_STREAK, show_default=True,
               help='Stop after this many posts in a row with nothing alive. 0 walks every candidate, which is '
                    'what a one-off sweep of the old posts wants.')
 @click.option('--dry-run', is_flag=True, default=False, help='Download, unpack and repack, but upload nothing.')
 def cli(index_repository: str, repository: str, max_time_limit: Optional[float], deploy_span: float,
-        max_batch_gib: float, max_posts: Optional[int], max_dead_streak: int, dry_run: bool):
+        max_batch_gib: float, max_posts: Optional[int], workers: int, max_dead_streak: int, dry_run: bool):
     """Store asiaon post packages."""
     logging.try_init_root(logging.INFO)
     sync(
@@ -562,6 +630,7 @@ def cli(index_repository: str, repository: str, max_time_limit: Optional[float],
         max_batch_bytes=int(max_batch_gib * 1024 ** 3),
         max_posts=max_posts,
         max_dead_streak=max_dead_streak,
+        workers=workers,
         dry_run=dry_run,
     )
 

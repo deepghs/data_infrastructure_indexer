@@ -16,15 +16,18 @@ class DownloadError(Exception):
     ``retryable`` marks a failure that is likely to pass on a second attempt, such as a body cut
     short, as opposed to a removed share or a transfer too slow to be worth repeating. ``gone``
     marks a link the host says no longer exists, which is an expected end for an old post rather
-    than a fault, so it never counts as one. ``blocked`` marks a host that is throttling or refusing
-    this run as a whole, so asking it again for the next post would only waste another transfer.
+    than a fault, so it never counts as one. ``blocked`` marks a host that is refusing this run as a
+    whole, so asking it again for the next post would only waste another transfer. ``slow`` marks a
+    transfer abandoned for crawling along: one can be a bad file, so the caller counts them per host.
     """
 
-    def __init__(self, message: str, retryable: bool = False, gone: bool = False, blocked: bool = False):
+    def __init__(self, message: str, retryable: bool = False, gone: bool = False, blocked: bool = False,
+                 slow: bool = False):
         super().__init__(message)
         self.retryable = retryable
         self.gone = gone
         self.blocked = blocked
+        self.slow = slow
 
 
 def get_download_session(timeout=(15, 60)):
@@ -94,7 +97,7 @@ def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
                     window_bytes -= window.popleft()[1]
                 if window and now - window[0][0] >= _STALL_WINDOW * 0.99 and window_bytes / _STALL_WINDOW < _MIN_SPEED:
                     raise DownloadError(f'Too slow, {window_bytes / _STALL_WINDOW / 1024:.0f} KiB/s over '
-                                        f'{_STALL_WINDOW}s, abandoned.', blocked=True)
+                                        f'{_STALL_WINDOW}s, abandoned.', slow=True)
         if expected_size is not None and written != expected_size:
             raise DownloadError(f'Incomplete download, got {written} of {expected_size} bytes.', retryable=True)
     except Exception:
