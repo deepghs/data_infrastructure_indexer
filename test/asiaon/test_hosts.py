@@ -76,6 +76,11 @@ class TestGofile:
         with pytest.raises(base.DownloadError):
             gofile.pick_file(self._folder('a.jpg', 'b.jpg'))
 
+    def test_an_emptied_folder_is_gone_not_a_failure(self):
+        with pytest.raises(base.DownloadError) as info:
+            gofile.pick_file(self._folder())
+        assert info.value.gone and info.value.kind == 'emptied'
+
 
 @pytest.mark.unittest
 class TestBase:

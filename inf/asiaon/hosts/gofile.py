@@ -89,6 +89,9 @@ def _contents(session, ident: str):
 
 def pick_file(data: Dict) -> Dict:
     files = [item for item in (data.get('children') or {}).values() if item.get('type') == 'file']
+    if not files:
+        # The folder is still there but nothing is left in it, which is how a purged share looks.
+        raise DownloadError('gofile: the folder holds no files any more', gone=True, kind='emptied')
     if len(files) == 1:
         return files[0]
     archives = [item for item in files if os.path.splitext(item.get('name', ''))[1].lower() in _ARCHIVE_EXT]
