@@ -867,3 +867,31 @@ class TestLinksNoHostCanTake:
         world.setup(list(range(1, 13)), [], extra=extra)
         world.run(workers=1, max_consecutive_failures=1)
         assert not package_commits(world)
+
+
+@pytest.mark.unittest
+class TestRefusingHost:
+    def test_repeated_refusals_set_the_host_aside_before_the_failure_breaker_trips(self, world, monkeypatch):
+        asked = []
+
+        def host(url, out):
+            asked.append(url)
+            raise DownloadError('the file answered HTTP 403', refused=True)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        world.setup(list(range(1, 31)), [])
+        world.run(workers=1, max_consecutive_failures=5)  # would raise if the breaker counted ten refusals
+        assert len(asked) == st._REFUSED_STRIKES * (1 + st._MAX_COOLDOWNS)
+        assert not package_commits(world)
+
+    def test_a_single_refused_file_does_not_set_the_host_aside(self, world, monkeypatch):
+        def host(url, out):
+            if url.endswith('/2'):
+                raise DownloadError('the file answered HTTP 403', refused=True)
+            return world.good_host('mediafire')(url, out)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        world.setup(list(range(1, 7)), [])
+        world.run(workers=1, max_consecutive_failures=5)
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert sorted(posts['dbid']) == [1, 3, 4, 5, 6]

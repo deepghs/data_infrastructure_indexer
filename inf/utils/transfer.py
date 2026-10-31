@@ -20,17 +20,20 @@ class DownloadError(Exception):
     ``takedown`` by the host, ``private`` or ``expired``) for the record kept of dead links.
     ``blocked`` marks a host that is refusing this run as a whole, so asking it again for the next
     post would only waste another transfer. ``slow`` marks a transfer abandoned for crawling along:
-    one can be a bad file, so the caller counts them per host.
+    one can be a bad file, so the caller counts them per host. ``refused`` marks an HTTP 403 or 429: one can
+    be a single file the host will not hand out, but several in a row mean the host is turning this client away,
+    so the caller counts those per host as well.
     """
 
     def __init__(self, message: str, retryable: bool = False, gone: bool = False, blocked: bool = False,
-                 slow: bool = False, kind: str = 'deleted'):
+                 slow: bool = False, kind: str = 'deleted', refused: bool = False):
         super().__init__(message)
         self.kind = kind
         self.retryable = retryable
         self.gone = gone
         self.blocked = blocked
         self.slow = slow
+        self.refused = refused
 
 
 def get_download_session(timeout=(15, 60)):

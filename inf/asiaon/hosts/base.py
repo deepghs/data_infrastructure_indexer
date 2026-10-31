@@ -59,7 +59,8 @@ def check_file_response(resp, host: str, what: str, expected_ctype_not: str = 't
     """Raise unless ``resp`` is a successful non-HTML answer, so an error page is never saved as an archive."""
     ctype = (resp.headers.get('Content-Type') or '').lower()
     if resp.status_code != 200:
-        raise DownloadError(f'{host}: {what} answered HTTP {resp.status_code}', retryable=resp.status_code >= 500)
+        raise DownloadError(f'{host}: {what} answered HTTP {resp.status_code}', retryable=resp.status_code >= 500,
+                            refused=resp.status_code in (403, 429))
     if ctype.startswith(expected_ctype_not):
         raise DownloadError(f'{host}: {what} answered an HTML page instead of a file', retryable=True)
 

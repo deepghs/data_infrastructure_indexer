@@ -85,6 +85,8 @@ mimetypes.add_type('image/webp', '.webp')
 _HOST_ATTEMPTS = 2
 #: Abandoned slow transfers after which a host is set aside for the rest of the run.
 _SLOW_STRIKES = 2
+#: Refusals (HTTP 403 or 429) in a row from one host before it is set aside; one can be a single file.
+_REFUSED_STRIKES = 3
 _MAX_CONSECUTIVE_FAILURES = 10
 _MAX_DEAD_STREAK = 200
 _MAX_BATCH_BYTES = 6 * 1024 ** 3
@@ -263,12 +265,20 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
                 archive_file = host.download(url, download_dir)
                 logging.info(f'Unpacking {os.path.basename(archive_file)!r} ...')
                 unpack_package(archive_file, unpack_dir, _to_none(post.get('unzip_password')))
+                if strikes is not None:
+                    strikes.pop(f'{host.name}:refused', None)
                 return host.name, unpack_dir
             except Exception as err:
                 logging.warning(f'Post {post["id"]!r} failed on {host.name} (attempt {attempt}/{_HOST_ATTEMPTS}): '
                                 f'{err!r}')
                 if isinstance(err, DownloadError) and err.blocked:
                     disabled.add(host.name)
+                if isinstance(err, DownloadError) and err.refused and strikes is not None:
+                    key = f'{host.name}:refused'
+                    strikes[key] = strikes.get(key, 0) + 1
+                    if strikes[key] >= _REFUSED_STRIKES:
+                        logging.warning(f'{host.name} refused {strikes[key]} times in a row, setting it aside.')
+                        disabled.add(host.name)
                 if isinstance(err, DownloadError) and err.slow and strikes is not None:
                     strikes[host.name] = strikes.get(host.name, 0) + 1
                     if strikes[host.name] >= _SLOW_STRIKES:
@@ -286,7 +296,7 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
                 # not touched here: on success they are what goes into the package.
                 if archive_file and os.path.exists(archive_file):
                     os.remove(archive_file)
-        if isinstance(verdict, DownloadError) and verdict.blocked:
+        if host.name in disabled and not (isinstance(verdict, DownloadError) and verdict.gone):
             # The host is refusing this run as a whole, which says nothing about the post: it is not a fault.
             kind = 'skipped'
         else:
