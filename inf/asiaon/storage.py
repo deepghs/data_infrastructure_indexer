@@ -673,6 +673,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 time.sleep(_COOLDOWN)
                 disabled.clear()
                 strikes.clear()
+                fail_streak = 0  # a new round: the refusals of the last one are not held against the next
             _submit_more()
             if not inflight:
                 break
