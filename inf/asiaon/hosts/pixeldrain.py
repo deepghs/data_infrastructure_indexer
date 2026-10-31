@@ -1,9 +1,12 @@
 """pixeldrain.com downloader.
 
 Single files are ``/u/<id>``; the file API gives the metadata and the bytes. Pixeldrain throttles an
-address after several gigabytes - measured, a runner went from over a hundred MB/s to 1 MB/s at about
-7 GB - and a throttled transfer is abandoned by the stall guard as ``blocked``, which stops the job
-asking this host again until the next run.
+address after about seven gigabytes: measured on a runner, a single stream held 300 to 600 MB/s for the
+first 7.1 GB and then fell to about 0.5 MB/s. Opening more connections does not get round it - eight
+parallel ranges together reach about 2 MB/s and sixteen no more, so the limit is on the address, not on a
+connection - and it had not eased ten minutes later. A fresh runner has a fresh address, so each run can
+take roughly seven gigabytes from this host. A throttled transfer is abandoned by the stall guard, and
+two of those set the host aside for the rest of the run.
 """
 import os
 import re
