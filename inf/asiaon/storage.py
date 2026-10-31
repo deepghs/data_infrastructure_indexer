@@ -246,6 +246,7 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
     whatever the post's final outcome, so the caller can record it.
     """
     outcomes: List[Tuple[str, str, str]] = []  # (host, 'gone' | 'fault' | 'skipped', text)
+    deterministic: List[bool] = []
     for host in HOSTS:
         url = usable_url(host, post)
         if not url:
@@ -299,7 +300,10 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
                 # not touched here: on success they are what goes into the package.
                 if archive_file and os.path.exists(archive_file):
                     os.remove(archive_file)
-        if host.name in disabled and not (isinstance(verdict, DownloadError) and verdict.gone):
+        if isinstance(verdict, DownloadError) and verdict.unusable:
+            # Not dead and not the host's fault: this link just cannot give a package (a split archive volume).
+            kind = 'skipped'
+        elif host.name in disabled and not (isinstance(verdict, DownloadError) and verdict.gone):
             # The host is refusing this run as a whole, which says nothing about the post: it is not a fault.
             kind = 'skipped'
         else:
@@ -307,6 +311,9 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
         if kind == 'gone' and gone_hosts is not None:
             gone_hosts[host.name] = {'kind': verdict.kind, 'reason': str(verdict)[:300]}
         outcomes.append((host.name, kind, f'{host.name}: {verdict!r}'))
+        if kind == 'fault':
+            # A verdict on the archive itself, which no other run or host would change, is not a sign of trouble.
+            deterministic.append(isinstance(verdict, UnpackError) and 'Refused unsafe archive' in str(verdict))
 
     text = '; '.join(item[2] for item in outcomes)
     asked = [item for item in outcomes if item[1] != 'skipped']
@@ -316,7 +323,9 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
     if all(item[1] == 'gone' for item in asked):
         # Every host that was asked says it is gone. If another was not asked, that one may still have it.
         raise (PackageDeferred(text) if skipped else PackageUnavailable(text))
-    raise PackageFailed(text)
+    failure = PackageFailed(text)
+    failure.deterministic = bool(deterministic) and all(deterministic)
+    raise failure
 
 
 def build_package(post_id: str, unpack_dir: str, batch_dir: str) -> Tuple[str, int, int, List[str]]:
@@ -724,7 +733,8 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 counts['failed'] += 1
                 deferred_streak = 0
                 failed_ids.append(post['id'])
-                fail_streak += 1
+                if not getattr(err, 'deterministic', False):
+                    fail_streak += 1  # an archive refused as unsafe says nothing about how the run is going
                 if fail_streak >= max_consecutive_failures:
                     _abandon()
                     _deploy(force=True)

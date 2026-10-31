@@ -22,11 +22,14 @@ class DownloadError(Exception):
     post would only waste another transfer. ``slow`` marks a transfer abandoned for crawling along:
     one can be a bad file, so the caller counts them per host. ``refused`` marks an HTTP 403 or 429: one can
     be a single file the host will not hand out, but several in a row mean the host is turning this client away,
-    so the caller counts those per host as well.
+    so the caller counts those per host as well. ``unusable`` marks a link that cannot yield a package here
+    although it is neither dead nor a fault of the host, such as one volume of a split archive: the next
+    host is tried and nothing is recorded or counted against the post.
     """
 
     def __init__(self, message: str, retryable: bool = False, gone: bool = False, blocked: bool = False,
-                 slow: bool = False, kind: str = 'deleted', refused: bool = False):
+                 slow: bool = False, kind: str = 'deleted', refused: bool = False,
+                 unusable: bool = False):
         super().__init__(message)
         self.kind = kind
         self.retryable = retryable
@@ -34,6 +37,7 @@ class DownloadError(Exception):
         self.blocked = blocked
         self.slow = slow
         self.refused = refused
+        self.unusable = unusable
 
 
 def get_download_session(timeout=(15, 60)):

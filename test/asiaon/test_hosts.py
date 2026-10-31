@@ -267,3 +267,33 @@ class TestGofileColdStorage:
         with pytest.raises(base.DownloadError) as info:
             gofile.download_gofile('https://gofile.io/d/abc', str(tmp_path))
         assert info.value.gone and info.value.kind == 'cold_storage'
+
+
+@pytest.mark.unittest
+class TestSplitVolumes:
+    class Resp:
+        status_code = 200
+
+        def __init__(self, disposition):
+            self.headers = {'Content-Disposition': disposition, 'Content-Type': 'application/zip'}
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    @pytest.mark.parametrize('name', ['x.zip.001', 'x.7z.002', 'x.RAR.01', 'x.part2.rar', 'x.z01'])
+    def test_volumes_of_a_split_archive_are_recognised(self, name):
+        assert base.is_split_volume(name)
+
+    @pytest.mark.parametrize('name', ['x.zip', 'x.rar', 'x.7z', 'photos.2019.05.06.zip', '', None])
+    def test_whole_archives_are_not(self, name):
+        assert not base.is_split_volume(name)
+
+    def test_a_volume_is_turned_away_before_any_bytes_are_read(self):
+        resp = self.Resp('attachment; filename="pack.zip.001"')
+        with pytest.raises(base.DownloadError) as info:
+            base.check_file_response(resp, 'mediafire', 'the file')
+        assert info.value.unusable and not info.value.gone and not info.value.retryable and resp.closed
+
+    def test_a_whole_archive_passes(self):
+        base.check_file_response(self.Resp('attachment; filename="pack.zip"'), 'mediafire', 'the file')

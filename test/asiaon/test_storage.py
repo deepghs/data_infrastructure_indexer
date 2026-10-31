@@ -923,3 +923,43 @@ class TestPauseWhenPostsKeepBeingDeferred:
         assert waits == [st._COOLDOWN]
         posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
         assert sorted(posts['dbid']) == list(range(1, 11))  # the deferred ones were not lost
+
+
+@pytest.mark.unittest
+class TestUnusableAndUnsafe:
+    def test_an_unusable_link_passes_to_the_next_host_without_a_failure(self, world, monkeypatch):
+        def volume(url, out):
+            raise DownloadError('one volume of a split archive', unusable=True)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', volume), Host('pixeldrain', world.good_host('pixeldrain'))])
+        extra = {d: {'pixeldrain_download_url': f'https://pd/{d}'} for d in range(1, 4)}
+        world.setup(list(range(1, 4)), [], extra=extra)
+        world.run(workers=1, max_consecutive_failures=1)
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert sorted(posts['dbid']) == [1, 2, 3]
+
+    def test_posts_with_only_an_unusable_link_are_deferred_not_failed(self, world, monkeypatch):
+        def volume(url, out):
+            raise DownloadError('one volume of a split archive', unusable=True)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', volume)])
+        world.setup(list(range(1, 8)), [])
+        world.run(workers=1, max_consecutive_failures=1)
+        assert not package_commits(world)
+
+    def test_archives_refused_as_unsafe_do_not_trip_the_failure_breaker(self, world, monkeypatch):
+        def refuse(*args, **kwargs):
+            raise st.UnpackError('Refused unsafe archive - an absolute path')
+
+        monkeypatch.setattr(st, 'unpack_package', refuse)
+        world.setup(list(range(1, 15)), [])
+        world.run(workers=1, max_consecutive_failures=3)  # would raise after three if they counted
+
+    def test_other_failures_still_trip_it(self, world, monkeypatch):
+        def broken(*args, **kwargs):
+            raise st.UnpackError('7z exited with code 2')
+
+        monkeypatch.setattr(st, 'unpack_package', broken)
+        world.setup(list(range(1, 15)), [])
+        with pytest.raises(RuntimeError, match='posts in a row failed'):
+            world.run(workers=1, max_consecutive_failures=3)

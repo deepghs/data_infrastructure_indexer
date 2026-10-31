@@ -55,6 +55,15 @@ def filename_from_response(resp, default: str = 'package.zip') -> str:
     return name or default
 
 
+#: Names of one volume of a split archive: ``x.zip.001``, ``x.part2.rar``, ``x.z01``. Unpacking a single volume
+#: fails, and the other volumes are not what the index links to, so these are turned away before any bytes move.
+_SPLIT_VOLUME = re.compile(r'\.(?:zip|rar|7z)\.\d{2,4}$|\.part\d+\.rar$|\.z\d{2}$', re.IGNORECASE)
+
+
+def is_split_volume(name: str) -> bool:
+    return bool(_SPLIT_VOLUME.search(name or ''))
+
+
 def check_file_response(resp, host: str, what: str, expected_ctype_not: str = 'text/html') -> None:
     """Raise unless ``resp`` is a successful non-HTML answer, so an error page is never saved as an archive."""
     ctype = (resp.headers.get('Content-Type') or '').lower()
@@ -63,7 +72,11 @@ def check_file_response(resp, host: str, what: str, expected_ctype_not: str = 't
                             refused=resp.status_code in (403, 429))
     if ctype.startswith(expected_ctype_not):
         raise DownloadError(f'{host}: {what} answered an HTML page instead of a file', retryable=True)
+    name = filename_from_response(resp, default='')
+    if is_split_volume(name):
+        resp.close()
+        raise DownloadError(f'{host}: {what} is one volume of a split archive ({name!r})', unusable=True)
 
 
 __all__ = ['DownloadError', 'get_download_session', 'safe_local_name', 'stream_to_file', 'MODERN_UA', 'TIMEOUT',
-           'get_plain_session', 'get', 'Pacer', 'filename_from_response', 'check_file_response']
+           'get_plain_session', 'get', 'Pacer', 'filename_from_response', 'check_file_response', 'is_split_volume']
