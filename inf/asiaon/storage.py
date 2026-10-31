@@ -90,6 +90,11 @@ _MAX_DEAD_STREAK = 200
 _MAX_BATCH_BYTES = 6 * 1024 ** 3
 #: Seconds to wait for a finished post before looking again at whether a commit is due.
 _WAIT_SLICE = 15.0
+#: When every host has been set aside, the job waits this long and then asks them all again: the limits
+#: seen so far (Cloudflare challenges, pixeldrain's throttle, gofile and mega rate limits) ease with time.
+_COOLDOWN = 20 * 60
+#: How many times in one run the job waits like that before giving up on the hosts for this run.
+_MAX_COOLDOWNS = 8
 
 
 class PackageUnavailable(Exception):
@@ -612,7 +617,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             state.update(last_deploy=time.time(), batch_bytes=0, packages=0, files=0)
             _clean_batch()
 
-        dead_streak, fail_streak = 0, 0
+        dead_streak, fail_streak, cooldowns = 0, 0, 0
         todo, inflight, submitted, no_more = iter(candidates), deque(), 0, False
 
         def _submit_more():
@@ -644,6 +649,20 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             # Checked on every turn, not only after a post is stored: a long stretch of dead links stores
             # nothing, and packages that are already built must not wait for the next stored post to be committed.
             _deploy()
+            if not inflight and not no_more and HOSTS and all(host.name in disabled for host in HOSTS):
+                # Nothing can be fetched right now. Walking on would only defer the whole list in a few
+                # seconds, so commit what is built, wait for the limits to ease and ask every host again.
+                out_of_time = max_time_limit is not None and start_time + max_time_limit < time.time() + _COOLDOWN
+                if cooldowns >= _MAX_COOLDOWNS or out_of_time:
+                    logging.warning('Every host is still refusing, nothing more can be stored in this run.')
+                    break
+                cooldowns += 1
+                _deploy(force=True)
+                logging.warning(f'Every host is set aside, waiting {_COOLDOWN // 60} minutes before asking them '
+                                f'again ({cooldowns}/{_MAX_COOLDOWNS}).')
+                time.sleep(_COOLDOWN)
+                disabled.clear()
+                strikes.clear()
             _submit_more()
             if not inflight:
                 break

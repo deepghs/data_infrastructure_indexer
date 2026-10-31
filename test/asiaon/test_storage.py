@@ -830,9 +830,31 @@ class TestBlockedHost:
         monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
         world.setup(list(range(1, 13)), [])
         world.run(workers=1, max_consecutive_failures=1)
-        # asked once for the first post, never again; nothing counted as a failure, nothing stored
-        assert len(asked) == 1
+        # asked once per round, never for the posts in between; nothing counted as a failure, nothing stored
+        assert len(asked) == 1 + st._MAX_COOLDOWNS
         assert not package_commits(world)
+
+    def test_the_hosts_are_asked_again_after_the_wait_and_the_run_carries_on(self, world, monkeypatch):
+        state = {'blocked': True}
+
+        def host(url, out):
+            if state['blocked']:
+                raise DownloadError('rate limited', blocked=True)
+            return world.good_host('mediafire')(url, out)
+
+        waits = []
+
+        def sleep(seconds):
+            waits.append(seconds)
+            state['blocked'] = False
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', host)])
+        monkeypatch.setattr(st.time, 'sleep', sleep)
+        world.setup(list(range(1, 7)), [])
+        world.run(workers=1)
+        assert waits == [st._COOLDOWN]
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert len(posts) >= 4  # all but the one that met the block are stored after the wait
 
 
 @pytest.mark.unittest
