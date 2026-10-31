@@ -895,3 +895,31 @@ class TestRefusingHost:
         world.run(workers=1, max_consecutive_failures=5)
         posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
         assert sorted(posts['dbid']) == [1, 3, 4, 5, 6]
+
+
+@pytest.mark.unittest
+class TestPauseWhenPostsKeepBeingDeferred:
+    def test_posts_deferred_by_a_set_aside_host_are_asked_again_after_the_wait(self, world, monkeypatch):
+        state = {'blocked': True}
+
+        def mediafire(url, out):
+            if state['blocked']:
+                raise DownloadError('rate limited', blocked=True)
+            return world.good_host('mediafire')(url, out)
+
+        waits = []
+
+        def sleep(seconds):
+            waits.append(seconds)
+            state['blocked'] = False
+
+        # A second host that is never set aside, as most of the list has no link for it, so the job is not
+        # "out of hosts" and only the run of deferred posts can tell it to wait.
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', mediafire), Host('googledrive', mediafire)])
+        monkeypatch.setattr(st, '_DEFER_STREAK', 3)
+        monkeypatch.setattr(st.time, 'sleep', sleep)
+        world.setup(list(range(1, 11)), [])
+        world.run(workers=1)
+        assert waits == [st._COOLDOWN]
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert sorted(posts['dbid']) == list(range(1, 11))  # the deferred ones were not lost

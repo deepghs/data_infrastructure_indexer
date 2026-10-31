@@ -97,6 +97,9 @@ _WAIT_SLICE = 15.0
 _COOLDOWN = 20 * 60
 #: How many times in one run the job waits like that before giving up on the hosts for this run.
 _MAX_COOLDOWNS = 8
+#: Posts in a row left for later because of a set-aside host, with at least one host still set aside, after
+#: which the job waits like that too: hosts that are not set aside cannot help with the posts it is walking.
+_DEFER_STREAK = 30
 
 
 class PackageUnavailable(Exception):
@@ -627,8 +630,9 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             state.update(last_deploy=time.time(), batch_bytes=0, packages=0, files=0)
             _clean_batch()
 
-        dead_streak, fail_streak, cooldowns = 0, 0, 0
+        dead_streak, fail_streak, cooldowns, deferred_streak = 0, 0, 0, 0
         todo, inflight, submitted, no_more = iter(candidates), deque(), 0, False
+        requeue, waiting = deque(), []  # waiting: posts deferred since the last pause, asked again after it
 
         def _submit_more():
             nonlocal submitted, no_more
@@ -639,7 +643,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 elif max_posts is not None and submitted >= max_posts:
                     no_more = True
                 else:
-                    post = next(todo, None)
+                    post = requeue.popleft() if requeue else next(todo, None)
                     if post is None:
                         no_more = True
                         continue
@@ -659,20 +663,27 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
             # Checked on every turn, not only after a post is stored: a long stretch of dead links stores
             # nothing, and packages that are already built must not wait for the next stored post to be committed.
             _deploy()
-            if not inflight and not no_more and HOSTS and all(host.name in disabled for host in HOSTS):
+            all_set_aside = bool(HOSTS) and all(host.name in disabled for host in HOSTS)
+            stalled = bool(disabled) and bool(waiting) and (max_posts is None or submitted < max_posts) and \
+                (deferred_streak >= _DEFER_STREAK or no_more)
+            if not inflight and ((all_set_aside and not no_more) or stalled):
                 # Nothing can be fetched right now. Walking on would only defer the whole list in a few
                 # seconds, so commit what is built, wait for the limits to ease and ask every host again.
                 out_of_time = max_time_limit is not None and start_time + max_time_limit < time.time() + _COOLDOWN
                 if cooldowns >= _MAX_COOLDOWNS or out_of_time:
-                    logging.warning('Every host is still refusing, nothing more can be stored in this run.')
+                    logging.warning('The hosts are still refusing, nothing more can be stored in this run.')
                     break
                 cooldowns += 1
                 _deploy(force=True)
-                logging.warning(f'Every host is set aside, waiting {_COOLDOWN // 60} minutes before asking them '
+                logging.warning(f'Hosts are set aside, waiting {_COOLDOWN // 60} minutes before asking them '
                                 f'again ({cooldowns}/{_MAX_COOLDOWNS}).')
                 time.sleep(_COOLDOWN)
                 disabled.clear()
                 strikes.clear()
+                requeue.extend(waiting)
+                waiting.clear()
+                no_more = False  # _submit_more puts it back at once if the budget or the list is used up
+                deferred_streak = 0
                 fail_streak = 0  # a new round: the refusals of the last one are not held against the next
             _submit_more()
             if not inflight:
@@ -691,11 +702,14 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 _note_gone(post, getattr(err, 'gone_hosts', None))
                 logging.warning(f'Post {post["id"]!r} left for the next run - {err}')
                 counts['deferred'] += 1
+                waiting.append(post)
+                deferred_streak += 1
                 continue
             except PackageUnavailable as err:
                 _note_gone(post, getattr(err, 'gone_hosts', None))
                 logging.warning(f'Post {post["id"]!r} is gone - {err}')
                 counts['unavailable'] += 1
+                deferred_streak = 0
                 dead_streak += 1
                 fail_streak = 0
                 if max_dead_streak and dead_streak >= max_dead_streak:
@@ -708,6 +722,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                 _note_gone(post, getattr(err, 'gone_hosts', None))
                 logging.error(f'Post {post["id"]!r} not stored - {err!r}')
                 counts['failed'] += 1
+                deferred_streak = 0
                 failed_ids.append(post['id'])
                 fail_streak += 1
                 if fail_streak >= max_consecutive_failures:
@@ -716,7 +731,7 @@ def sync(index_repository: str, repository: str, max_time_limit: Optional[float]
                     raise RuntimeError(f'{fail_streak} posts in a row failed, giving up: '
                                        f'{failed_ids[-fail_streak:]!r}. Last error: {err!r}') from err
                 continue
-            dead_streak = fail_streak = 0
+            dead_streak = fail_streak = deferred_streak = 0
 
             _note_gone(post, result['gone_hosts'])
             adopt_staged(result['stage'], batch_dir)
