@@ -31,14 +31,14 @@ on:
         description: 'Download, unpack and repack, but upload nothing.'
         required: false
         default: 'false'
-  # Once a day, six hours after the asiaon index (04:25 UTC) and an hour after the cosplaytele storage
-  # (09:25 UTC), so the index has long since published and the two storage jobs do not share a window.
-  # The site posts around a hundred a day, so a run has plenty to do; after a long gap the backlog is
-  # worked off newest first across as many daily runs as it takes. Runs never overlap: the concurrency
-  # group queues a second one behind the first, because each commit rewrites the tables from a
-  # snapshot read at start.
+  # Four times a day, six hours apart, starting an hour after the asiaon index (04:25 UTC) so the index has
+  # published before the first run reads it; the cosplaytele storage (09:25 UTC) has its own slot. A run
+  # stops starting new posts after five hours and needs about twenty more minutes to finish and upload its
+  # last batch, so consecutive runs leave a gap of about forty minutes and do not queue. The backlog is worked
+  # off newest first across as many runs as it takes. Runs never overlap: the concurrency group queues a
+  # second one behind the first, because each commit rewrites the tables from a snapshot read at start.
   schedule:
-    - cron: '25 10 * * *'
+    - cron: '25 5,11,17,23 * * *'
 
 concurrency:
   group: ao-storage
