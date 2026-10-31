@@ -192,3 +192,78 @@ class TestMega:
         monkeypatch.setattr(mega.requests, 'post', lambda *a, **k: R())
         monkeypatch.setattr(mega.time, 'sleep', lambda s: None)
         assert mega._ask_api('UZRACZqb')['s'] == 5
+
+
+@pytest.mark.unittest
+class TestMediafireRetries:
+    class Page:
+        def __init__(self, text, status=200):
+            self.text, self.status_code = text, status
+
+    BUTTON = '<a id="downloadButton" href="https://download1.mediafire.com/y/f.zip">Download</a>'
+    CHALLENGE = '<title>Just a moment...</title>'
+
+    def _patch(self, monkeypatch, pages):
+        used = []
+
+        def fetch(url, attempt):
+            used.append((url, attempt))
+            return pages[min(len(used), len(pages)) - 1]
+
+        monkeypatch.setattr(mediafire, 'fetch_page', fetch)
+        monkeypatch.setattr(mediafire.time, 'sleep', lambda s: None)
+        return used
+
+    def test_a_challenged_page_is_asked_again_until_it_passes(self, monkeypatch, tmp_path):
+        used = self._patch(monkeypatch, [self.Page(self.CHALLENGE, 403)] * 4 + [self.Page(self.BUTTON)])
+
+        def stop(*args, **kwargs):
+            raise RuntimeError('reached the transfer')
+
+        monkeypatch.setattr(mediafire, 'get', stop)
+        with pytest.raises(RuntimeError, match='reached the transfer'):
+            mediafire.download_mediafire('https://www.mediafire.com/file/abc/x.zip/file', str(tmp_path))
+        assert [attempt for _, attempt in used] == [1, 2, 3, 4, 5]
+
+    def test_a_page_that_stays_challenged_counts_as_a_refusal_not_a_block(self, monkeypatch, tmp_path):
+        used = self._patch(monkeypatch, [self.Page(self.CHALLENGE, 403)])
+        with pytest.raises(base.DownloadError) as info:
+            mediafire.download_mediafire('https://www.mediafire.com/file/abc/x.zip/file', str(tmp_path))
+        assert len(used) == mediafire._PAGE_ATTEMPTS
+        assert info.value.refused and not info.value.blocked and not info.value.gone
+
+    def test_a_deleted_page_is_gone_at_once(self, monkeypatch, tmp_path):
+        used = self._patch(monkeypatch, [self.Page('Invalid or Deleted File', 200)])
+        with pytest.raises(base.DownloadError) as info:
+            mediafire.download_mediafire('https://www.mediafire.com/file/abc/x.zip/file', str(tmp_path))
+        assert info.value.gone and len(used) == 1
+
+    def test_a_mangled_prefix_is_cleaned(self):
+        assert mediafire.clean_url('https://wwhttp://www.mediafire.com/file/abc/x.zip/file') == \
+            'http://www.mediafire.com/file/abc/x.zip/file'
+        assert mediafire.clean_url('https://www.mediafire.com/file/abc/x.zip/file') == \
+            'https://www.mediafire.com/file/abc/x.zip/file'
+
+    def test_fingerprints_unknown_to_the_installed_client_are_left_out(self, monkeypatch):
+        monkeypatch.setattr(mediafire, '_FINGERPRINTS', ['no-such-browser', 'chrome120'])
+        assert mediafire._fingerprints() in (['chrome120'], ['chrome'])
+
+
+@pytest.mark.unittest
+class TestGofileColdStorage:
+    class Resp:
+        status_code = 403
+        text = "This content has been moved to cold storage due to inactivity. To access it, you'll need to import it."
+
+        def close(self):
+            pass
+
+    def test_a_cold_storage_answer_is_gone_not_a_fault(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gofile, 'get_plain_session', lambda: type('S', (), {'cookies': type('C', (), {
+            'set': lambda *a, **k: None})()})())
+        monkeypatch.setattr(gofile, '_contents', lambda session, ident: (
+            'tok', {'children': {'1': {'type': 'file', 'name': 'a.zip', 'link': 'https://store/a.zip'}}}))
+        monkeypatch.setattr(gofile, 'get', lambda *a, **k: self.Resp())
+        with pytest.raises(base.DownloadError) as info:
+            gofile.download_gofile('https://gofile.io/d/abc', str(tmp_path))
+        assert info.value.gone and info.value.kind == 'cold_storage'

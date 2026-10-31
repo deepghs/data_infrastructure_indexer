@@ -110,6 +110,13 @@ def download_gofile(url: str, output_dir: str) -> str:
     item = pick_file(data)
     session.cookies.set('accountToken', token, domain='.gofile.io')
     resp = get(session, item['link'], headers={'Authorization': f'Bearer {token}'}, stream=True)
+    if resp.status_code == 403 and 'cold storage' in resp.text.lower():
+        # Gofile moves content nobody has opened for a while to cold storage, from where only a premium
+        # account can import it back. Measured on runners, that is what a 403 on a file answers, for
+        # every folder tried, and nothing a guest account does changes it.
+        resp.close()
+        raise DownloadError('gofile: the file is in cold storage, only a premium account can import it',
+                            gone=True, kind='cold_storage')
     check_file_response(resp, 'gofile', 'the file')
     path = os.path.join(output_dir, safe_local_name(item.get('name', 'package.zip')))
     stream_to_file(resp, path)

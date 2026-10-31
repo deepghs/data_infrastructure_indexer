@@ -4,11 +4,13 @@ Each entry maps a host to the ``<host>_download_url`` column of the index and to
 ``(url, output_dir) -> local archive path`` that raises :class:`DownloadError` on failure. A post is
 stored from the first host whose package downloads *and* unpacks.
 
-The order follows what was measured on a runner without a proxy: mediafire is by far the fastest and has
-no byte limit, though Cloudflare turns away about a fifth of requests; pixeldrain is dependable but
-throttled to a crawl after roughly seven gigabytes; gofile works but only when its folder holds a
-single archive; Google Drive is where most of the surviving old posts live; mega works but only a
-handful of old links are still alive and it is slow. Hosts nothing here can fetch are left out, each for
+The order follows what was measured on a runner without a proxy: mediafire is by far the fastest, at over
+a hundred megabytes a second with no byte limit, and the one host most of the remaining posts depend on;
+Cloudflare challenges some of its pages, which a fresh session with another browser fingerprint usually gets
+past within a few tries; pixeldrain is dependable but throttled to a crawl after roughly seven gigabytes;
+gofile worked for the newest posts but nearly everything older has been emptied or moved to cold storage,
+which only a premium account can bring back, so those links are recorded as gone; Google Drive and mega
+held most of the old posts and almost all of them are dead now. Hosts nothing here can fetch are left out, each for
 a measured reason: buzzheavier answers every runner request with 403 whatever the browser profile,
 terabox wants a human verification, vikingfile a Turnstile challenge, rapidgator a premium account,
 workupload a human check, and the old file hosts are shut down. Posts linked only from those stay
