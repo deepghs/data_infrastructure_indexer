@@ -963,3 +963,42 @@ class TestUnusableAndUnsafe:
         world.setup(list(range(1, 15)), [])
         with pytest.raises(RuntimeError, match='posts in a row failed'):
             world.run(workers=1, max_consecutive_failures=3)
+
+
+@pytest.mark.unittest
+class TestBusyHub:
+    def _flaky(self, world, monkeypatch, failures):
+        real = st.safe_upload_directory_as_directory
+        calls = {'n': 0}
+
+        def upload(*args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] <= failures:
+                raise RuntimeError('429 Too Many Requests')
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(st, 'safe_upload_directory_as_directory', upload)
+        return calls
+
+    def test_a_commit_that_fails_a_few_times_still_lands_once(self, world, monkeypatch):
+        calls = self._flaky(world, monkeypatch, failures=2)
+        world.setup(list(range(1, 4)), [])
+        world.run(workers=1)
+        assert calls['n'] == 2 + len(world.uploads)  # the two failed tries plus one call for each commit
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert sorted(posts['dbid']) == [1, 2, 3]
+
+    def test_a_busy_hub_puts_a_commit_off_and_the_batch_goes_up_later(self, world, monkeypatch):
+        # more failures than one commit's attempts: the batch is put off, not lost, and goes up with the next one
+        calls = self._flaky(world, monkeypatch, failures=st._UPLOAD_ATTEMPTS)
+        world.setup(list(range(1, 7)), [])
+        st.sync('idx', 'stor', deploy_span=0, workers=1)
+        assert calls['n'] > st._UPLOAD_ATTEMPTS
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert sorted(posts['dbid']) == list(range(1, 7))
+
+    def test_the_last_commit_of_a_run_still_raises_when_the_hub_never_answers(self, world, monkeypatch):
+        self._flaky(world, monkeypatch, failures=10 ** 6)
+        world.setup([1], [])
+        with pytest.raises(RuntimeError, match='429'):
+            world.run(workers=1)
