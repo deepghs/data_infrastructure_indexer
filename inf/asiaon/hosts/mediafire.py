@@ -21,8 +21,9 @@ from curl_cffi import requests as cffi_requests
 from curl_cffi.requests import BrowserType
 from ditk import logging
 from pyquery import PyQuery as pq
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
+from ..volumes import is_mediafire_download_url
 from .base import (DownloadError, check_file_response, filename_from_response, get, get_download_session,
                    safe_local_name, stream_to_file)
 
@@ -40,7 +41,8 @@ _GONE = re.compile(r'Invalid or Deleted File|dangerous file|violat|has been (?:d
 
 def clean_url(url: str) -> str:
     """The share link itself: some index rows hold a mangled prefix such as ``https://wwhttp://www.mediafire...``."""
-    match = re.search(r'https?://(?:www\.)?mediafire\.com/\S+', url)
+    match = re.search(r'https?://(?:www\.)?mediafire\.com/file/\S+', url) \
+        or re.search(r'https?://(?:www\.)?mediafire\.com/\S+', url)
     return match.group(0) if match else url
 
 
@@ -85,6 +87,10 @@ def resolve_direct_link(url: str) -> str:
         last = f'HTTP {resp.status_code}'
         logging.warning(f'mediafire page gave no download link ({last}), attempt {attempt}/{_PAGE_ATTEMPTS}.')
         time.sleep(_PAGE_PAUSE)
+    if direct and not is_mediafire_download_url(direct):
+        # The page is third-party content once it has passed the challenge: only mediafire's own servers are fetched.
+        raise DownloadError(f'mediafire: the download link points at {urlsplit(direct).hostname!r}, '
+                            f'not at a mediafire server')
     if not direct:
         # Not blocked: one page can stay challenged while the next passes at once. A host that really turns
         # the job away shows as refusals in a row, which the caller counts.
@@ -173,6 +179,11 @@ def download_mediafire_post_volumes(post: Dict, output_dir: str) -> str:
             if resp.status_code != 200 or html_answer:
                 resp.close()
                 raise DownloadError(f'mediafire: volume {index} answered HTTP {resp.status_code}', retryable=True)
+            announced = resp.headers.get('Content-Length')
+            if announced and int(announced) != size:
+                resp.close()
+                raise DownloadError(f'mediafire: volume {index} announces {announced} bytes, the api said {size}',
+                                    retryable=True)
             path = os.path.join(output_dir, f'volume-{index:04d}')
             stream_to_file(resp, path, expected_size=size)
             paths.append(path)

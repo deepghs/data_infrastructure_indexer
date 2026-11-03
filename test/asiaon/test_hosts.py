@@ -245,6 +245,10 @@ class TestMediafireRetries:
         assert mediafire.clean_url('https://www.mediafire.com/file/abc/x.zip/file') == \
             'https://www.mediafire.com/file/abc/x.zip/file'
 
+    def test_a_share_link_repeated_inside_another_address_is_cleaned(self):
+        assert mediafire.clean_url('https://www.mediafire.com/https://www.mediafire.com/file/abc/x.zip/file') == \
+            'https://www.mediafire.com/file/abc/x.zip/file'
+
     def test_fingerprints_unknown_to_the_installed_client_are_left_out(self, monkeypatch):
         monkeypatch.setattr(mediafire, '_FINGERPRINTS', ['no-such-browser', 'chrome120'])
         assert mediafire._fingerprints() in (['chrome120'], ['chrome'])
@@ -397,7 +401,7 @@ class TestSplitArchives:
 
     def test_a_volume_that_ends_short_is_an_error_and_leaves_nothing_joined(self, monkeypatch, tmp_path):
         self._wire(monkeypatch, ['a.zip.001', 'a.zip.002'], [4, 9], [b'PK\x03\x04', b'xyz'])
-        with pytest.raises(base.DownloadError, match='Incomplete'):
+        with pytest.raises(base.DownloadError, match='announces'):  # the api and the response disagree
             mediafire.download_mediafire_post_volumes({'id': 'p'}, str(tmp_path))
         assert not (tmp_path / 'package.zip').exists()
 
@@ -409,3 +413,64 @@ class TestSplitArchives:
 
     def test_the_registry_wires_the_volumes_route_to_mediafire_only(self):
         assert {h.name for h in HOSTS if h.volumes is not None} == {'mediafire'}
+
+
+@pytest.mark.unittest
+class TestMediafireHostChecks:
+    @pytest.mark.parametrize('url', [
+        'https://www.mediafire.com/file/abc/x.zip/file', 'http://mediafire.com/file/abc/x.zip',
+    ])
+    def test_share_pages_on_mediafire_are_accepted(self, url):
+        from inf.asiaon import volumes
+        assert volumes.is_mediafire_page_url(url)
+
+    @pytest.mark.parametrize('url', [
+        'https://evil.example/?u=mediafire.com/file/x', 'https://mediafire.com.evil.example/file/x',
+        'https://evil.example/mediafire.com/file/x', 'ftp://www.mediafire.com/file/x',
+        '', None,
+    ])
+    def test_lookalike_addresses_are_not(self, url):
+        from inf.asiaon import volumes
+        assert not volumes.is_mediafire_page_url(url)
+
+    def test_the_post_page_cannot_point_the_job_at_another_host(self):
+        from inf.asiaon import volumes
+        html = ('<p>MediaFire: <a href="https://evil.example/?u=mediafire.com/file/x">Part 1</a> | '
+                '<a href="https://www.mediafire.com/file/ok/x.zip.002/file">Part 2</a></p>')
+        assert volumes.mediafire_volume_urls({'download': {'down': html}}) == \
+            ['https://www.mediafire.com/file/ok/x.zip.002/file']
+
+    @pytest.mark.parametrize('url, expected', [
+        ('https://download123.mediafire.com/x/file.zip', True), ('https://www.mediafire.com/file/x', False),
+        ('http://download1.mediafire.com/x', False), ('https://evil.example/x.zip', False),
+        ('https://download1.mediafire.com.evil.example/x', False),
+    ])
+    def test_only_mediafires_download_servers_are_fetched(self, url, expected):
+        from inf.asiaon import volumes
+        assert volumes.is_mediafire_download_url(url) is expected
+
+    def test_a_page_whose_button_leads_elsewhere_is_refused(self, monkeypatch):
+        scrambled = base64.b64encode(b'https://evil.example/x.zip').decode()
+        page = type('P', (), {'status_code': 200,
+                              'text': f'<a id="downloadButton" data-scrambled-url="{scrambled}">x</a>'})()
+        monkeypatch.setattr(mediafire, 'fetch_page', lambda url, attempt: page)
+        with pytest.raises(base.DownloadError, match='not at a mediafire server'):
+            mediafire.resolve_direct_link('https://www.mediafire.com/file/abc/x/file')
+
+    def test_a_body_longer_than_announced_stops_at_once(self, tmp_path):
+        from inf.utils.transfer import stream_to_file
+
+        class Resp:
+            headers = {}
+
+            def iter_content(self, chunk_size=1):
+                for _ in range(1000):
+                    yield b'x' * 10
+
+            def close(self):
+                pass
+
+        dst = tmp_path / 'f'
+        with pytest.raises(base.DownloadError, match='Longer than announced'):
+            stream_to_file(Resp(), str(dst), expected_size=25)
+        assert not dst.exists()

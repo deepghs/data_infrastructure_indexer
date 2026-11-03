@@ -22,7 +22,8 @@ from typing import Callable, Dict, List, NamedTuple, Optional
 from .base import DownloadError
 from .gofile import download_gofile
 from .googledrive import download_googledrive, parse_file_id as parse_drive_id
-from .mediafire import download_mediafire, download_mediafire_post_volumes
+from ..volumes import is_mediafire_page_url
+from .mediafire import clean_url as clean_mediafire_url, download_mediafire, download_mediafire_post_volumes
 from .mega import download_mega, parse_link as parse_mega_link
 from .pixeldrain import download_pixeldrain
 
@@ -42,7 +43,8 @@ class Host(NamedTuple):
 
 
 HOSTS: List[Host] = [
-    Host('mediafire', download_mediafire, lambda url: 'mediafire.com' in url, download_mediafire_post_volumes),
+    Host('mediafire', download_mediafire, lambda url: is_mediafire_page_url(clean_mediafire_url(url)),
+         download_mediafire_post_volumes),
     Host('pixeldrain', download_pixeldrain, lambda url: re.search(r'pixeldrain\.com/u/[\w-]+', url) is not None),
     Host('gofile', download_gofile, lambda url: re.search(r'gofile\.io/d/[\w-]+', url) is not None),
     Host('googledrive', download_googledrive, lambda url: parse_drive_id(url) is not None),

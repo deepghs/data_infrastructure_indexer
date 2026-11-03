@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from ditk import logging
 from pyquery import PyQuery as pq
@@ -25,6 +26,27 @@ _SPACE_FACTOR = 3.2
 _SPACE_MARGIN = 2 * 1024 ** 3
 #: Posts with more volume bytes than this are left for a bigger disk.
 MAX_TOTAL_BYTES = 20 * 1024 ** 3
+
+
+def is_mediafire_page_url(url: Optional[str]) -> bool:
+    """Whether ``url`` is a share page on mediafire itself: the host is checked, not the text of the address."""
+    try:
+        parts = urlsplit(url or '')
+    except ValueError:
+        return False
+    host = (parts.hostname or '').lower()
+    return parts.scheme in ('http', 'https') and host in ('mediafire.com', 'www.mediafire.com') \
+        and parts.path.startswith('/file/')
+
+
+def is_mediafire_download_url(url: Optional[str]) -> bool:
+    """Whether ``url`` is a file on one of mediafire's download servers (``download123.mediafire.com``)."""
+    try:
+        parts = urlsplit(url or '')
+    except ValueError:
+        return False
+    host = (parts.hostname or '').lower()
+    return parts.scheme == 'https' and host.endswith('.mediafire.com') and host != 'www.mediafire.com'
 
 
 def parse_volume_name(name: Optional[str]) -> Optional[Tuple[str, int]]:
@@ -43,7 +65,7 @@ def mediafire_volume_urls(raw_post: Dict) -> List[str]:
         found = []
         for position, anchor in enumerate(paragraph('a').items()):
             href = anchor.attr('href') or ''
-            if 'mediafire.com/file/' not in href:
+            if not is_mediafire_page_url(href):
                 continue
             number = _PART_TEXT.search(anchor.text() or '')
             found.append((int(number.group(1)) if number else position + 1, href))

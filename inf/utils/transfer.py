@@ -95,6 +95,9 @@ def stream_to_file(response, dst_file: str, expected_size: Optional[int] = None,
                     continue
                 f.write(chunk)
                 written += len(chunk)
+                if expected_size is not None and written > expected_size:
+                    # Stop at once: a body longer than announced must not be allowed to fill the disk.
+                    raise DownloadError(f'Longer than announced, over {expected_size} bytes.')
                 now = clock()
                 if now - last_report >= _REPORT_EVERY:
                     last_report = now
