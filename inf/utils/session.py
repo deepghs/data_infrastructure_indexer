@@ -25,6 +25,17 @@ try:
 except ImportError:  # pragma: no cover - curl_cffi is an optional transport
     pass
 
+#: A third transport: waifuc's ``DanbooruSource`` talks through httpx, whose timeouts and dropped
+#: connections (``ReadTimeout``, ``RemoteProtocolError``, ``ConnectError``) share neither of the
+#: hierarchies above. Left out, a single slow answer from Danbooru ended the whole tag job without
+#: one retry: nine of its last nine failed runs ended that way.
+try:
+    import httpx as _httpx
+
+    _RETRYABLE_REQUEST_ERRORS = _RETRYABLE_REQUEST_ERRORS + (_httpx.TransportError,)
+except ImportError:  # pragma: no cover - httpx is optional here
+    pass
+
 #: Public alias for callers that need to catch a request failure from either transport. Use
 #: this rather than ``requests.RequestException`` anywhere a curl_cffi session might be passed
 #: in, and read the status with ``getattr(getattr(err, 'response', None), 'status_code', None)``
