@@ -17,12 +17,12 @@ workupload a human check, and the old file hosts are shut down. Posts linked onl
 unstored for a later attempt.
 """
 import re
-from typing import Callable, List, NamedTuple
+from typing import Callable, Dict, List, NamedTuple, Optional
 
 from .base import DownloadError
 from .gofile import download_gofile
 from .googledrive import download_googledrive, parse_file_id as parse_drive_id
-from .mediafire import download_mediafire
+from .mediafire import download_mediafire, download_mediafire_post_volumes
 from .mega import download_mega, parse_link as parse_mega_link
 from .pixeldrain import download_pixeldrain
 
@@ -33,6 +33,8 @@ class Host(NamedTuple):
     #: Whether a link in this host's column is one the downloader can take. Index columns also hold
     #: link shorteners and folder links, which are not a verdict on the post and are left alone.
     accepts: Callable[[str], bool] = lambda url: True
+    #: ``(post, directory) -> archive`` for a post whose link turned out to be one volume of a split archive.
+    volumes: Optional[Callable[[Dict, str], str]] = None
 
     @property
     def column(self) -> str:
@@ -40,7 +42,7 @@ class Host(NamedTuple):
 
 
 HOSTS: List[Host] = [
-    Host('mediafire', download_mediafire, lambda url: 'mediafire.com' in url),
+    Host('mediafire', download_mediafire, lambda url: 'mediafire.com' in url, download_mediafire_post_volumes),
     Host('pixeldrain', download_pixeldrain, lambda url: re.search(r'pixeldrain\.com/u/[\w-]+', url) is not None),
     Host('gofile', download_gofile, lambda url: re.search(r'gofile\.io/d/[\w-]+', url) is not None),
     Host('googledrive', download_googledrive, lambda url: parse_drive_id(url) is not None),

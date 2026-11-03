@@ -75,7 +75,8 @@ def check_file_response(resp, host: str, what: str, expected_ctype_not: str = 't
     name = filename_from_response(resp, default='')
     if is_split_volume(name):
         resp.close()
-        raise DownloadError(f'{host}: {what} is one volume of a split archive ({name!r})', unusable=True)
+        raise DownloadError(f'{host}: {what} is one volume of a split archive ({name!r})', unusable=True,
+                            kind='split_volume')
 
 
 __all__ = ['DownloadError', 'get_download_session', 'safe_local_name', 'stream_to_file', 'MODERN_UA', 'TIMEOUT',

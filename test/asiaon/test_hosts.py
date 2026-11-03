@@ -1,4 +1,5 @@
 import base64
+import os
 
 import pytest
 
@@ -297,3 +298,114 @@ class TestSplitVolumes:
 
     def test_a_whole_archive_passes(self):
         base.check_file_response(self.Resp('attachment; filename="pack.zip"'), 'mediafire', 'the file')
+
+
+@pytest.mark.unittest
+class TestSplitArchives:
+    HTML = ('<p>Download: <a href="https://x/y">Download</a></p>'
+            '<p>MediaFire: <a href="https://www.mediafire.com/file/bbb/x.zip.002/file">Part 2</a> | '
+            '<a href="https://www.mediafire.com/file/aaa/x.zip.001/file">Part 1</a> | '
+            '<a href="https://www.mediafire.com/file/ccc/x.zip.003/file">Part 3</a></p>')
+
+    def test_the_mediafire_line_is_read_in_volume_order(self):
+        from inf.asiaon import volumes
+        urls = volumes.mediafire_volume_urls({'download': {'down': self.HTML}})
+        assert [u.split('/')[4] for u in urls] == ['aaa', 'bbb', 'ccc']
+
+    def test_a_post_without_a_mediafire_line_gives_nothing(self):
+        from inf.asiaon import volumes
+        assert volumes.mediafire_volume_urls({'download': {'down': '<p>Gofile: <a href="https://g/x">x</a></p>'}}) == []
+        assert volumes.mediafire_volume_urls({}) == []
+
+    @pytest.mark.parametrize('name, expected', [('x.zip.001', ('zip', 1)), ('x.7z.012', ('7z', 12)),
+                                                ('x.zip', None), ('x.rar.001', None), ('x.part1.rar', None)])
+    def test_volume_names(self, name, expected):
+        from inf.asiaon import volumes
+        assert volumes.parse_volume_name(name) == expected
+
+    def test_a_complete_set_is_accepted_and_a_gap_or_a_mix_is_not(self):
+        from inf.asiaon import volumes
+        assert volumes.check_volume_set(['a.zip.001', 'a.zip.002']) == 'zip'
+        for names in (['a.zip.001', 'a.zip.003'], ['a.zip.002', 'a.zip.003'], ['a.zip.001', 'a.7z.002'],
+                      ['a.zip.001', 'a.zip'], []):
+            with pytest.raises(ValueError):
+                volumes.check_volume_set(names)
+
+    def test_the_volumes_are_joined_in_order_and_removed(self, tmp_path):
+        from inf.asiaon import volumes
+        paths = []
+        for i, data in enumerate([b'AAA', b'BB', b'C'], start=1):
+            path = tmp_path / f'v{i}'
+            path.write_bytes(data)
+            paths.append(str(path))
+        assert volumes.join_volumes(paths, str(tmp_path / 'package.zip')) == 6
+        assert (tmp_path / 'package.zip').read_bytes() == b'AAABBC'
+        assert not any((tmp_path / f'v{i}').exists() for i in (1, 2, 3))
+
+    def test_too_little_room_is_reported(self, tmp_path):
+        from inf.asiaon import volumes
+        with pytest.raises(OSError, match='free'):
+            volumes.check_space(str(tmp_path), 1 << 60)
+
+    def _wire(self, monkeypatch, names, sizes, bodies, urls=None):
+        from inf.asiaon import client
+        urls = urls or [f'https://www.mediafire.com/file/k{i}/x/file' for i in range(len(names))]
+        html = '<p>MediaFire: ' + ' | '.join(f'<a href="{u}">Part {i}</a>' for i, u in enumerate(urls, 1)) + '</p>'
+
+        class Client:
+            def init(self):
+                pass
+
+            def get_info(self, pid, raw=False):
+                return {'download': {'down': html}}
+
+        info = {u: (n, s) for u, n, s in zip(urls, names, sizes)}
+        body = {u: b for u, b in zip(urls, bodies)}
+
+        class Resp:
+            status_code = 200
+            headers = {'Content-Type': 'application/zip'}
+
+            def __init__(self, data):
+                self.data = data
+                self.headers = {'Content-Type': 'application/zip', 'Content-Length': str(len(data))}
+
+            def iter_content(self, chunk_size=1):
+                yield self.data
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(client, 'AOClient', Client)
+        monkeypatch.setattr(mediafire, '_volume_info', lambda url: info[url])
+        monkeypatch.setattr(mediafire, 'resolve_direct_link', lambda url: url)
+        monkeypatch.setattr(mediafire, '_open_file', lambda direct: Resp(body[direct]))
+        monkeypatch.setattr(mediafire.time, 'sleep', lambda s: None)
+        return urls
+
+    def test_every_volume_is_fetched_and_joined_into_one_archive(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, ['a.zip.001', 'a.zip.002'], [4, 3], [b'PK\x03\x04', b'xyz'])
+        path = mediafire.download_mediafire_post_volumes({'id': 'p'}, str(tmp_path))
+        assert os.path.basename(path) == 'package.zip' and open(path, 'rb').read() == b'PK\x03\x04xyz'
+        assert sorted(os.listdir(tmp_path)) == ['package.zip']
+
+    def test_an_incomplete_set_is_not_downloaded(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, ['a.zip.001', 'a.zip.003'], [4, 3], [b'PK\x03\x04', b'xyz'])
+        with pytest.raises(base.DownloadError) as info:
+            mediafire.download_mediafire_post_volumes({'id': 'p'}, str(tmp_path))
+        assert info.value.unusable and info.value.kind == 'split_volume' and os.listdir(tmp_path) == []
+
+    def test_a_volume_that_ends_short_is_an_error_and_leaves_nothing_joined(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, ['a.zip.001', 'a.zip.002'], [4, 9], [b'PK\x03\x04', b'xyz'])
+        with pytest.raises(base.DownloadError, match='Incomplete'):
+            mediafire.download_mediafire_post_volumes({'id': 'p'}, str(tmp_path))
+        assert not (tmp_path / 'package.zip').exists()
+
+    def test_a_post_that_lists_one_link_has_no_further_volumes(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, ['a.zip.001'], [4], [b'PK\x03\x04'])
+        with pytest.raises(base.DownloadError) as info:
+            mediafire.download_mediafire_post_volumes({'id': 'p'}, str(tmp_path))
+        assert info.value.unusable
+
+    def test_the_registry_wires_the_volumes_route_to_mediafire_only(self):
+        assert {h.name for h in HOSTS if h.volumes is not None} == {'mediafire'}

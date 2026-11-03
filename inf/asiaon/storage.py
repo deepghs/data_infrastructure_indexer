@@ -270,7 +270,14 @@ def fetch_package(post: Dict, work_dir: str, disabled: Set[str], strikes: Option
         for attempt in range(1, _HOST_ATTEMPTS + 1):
             archive_file = None
             try:
-                archive_file = host.download(url, download_dir)
+                try:
+                    archive_file = host.download(url, download_dir)
+                except DownloadError as err:
+                    if not (err.unusable and err.kind == 'split_volume' and host.volumes is not None):
+                        raise
+                    logging.info(f'Post {post["id"]!r}: the {host.name} link is one volume of a split archive, '
+                                 f'fetching all of them.')
+                    archive_file = host.volumes(post, download_dir)
                 logging.info(f'Unpacking {os.path.basename(archive_file)!r} ...')
                 unpack_package(archive_file, unpack_dir, _to_none(post.get('unzip_password')))
                 if strikes is not None:

@@ -1002,3 +1002,38 @@ class TestBusyHub:
         world.setup([1], [])
         with pytest.raises(RuntimeError, match='429'):
             world.run(workers=1)
+
+
+@pytest.mark.unittest
+class TestSplitPosts:
+    @staticmethod
+    def _volume(url, out):
+        raise DownloadError('one volume of a split archive', unusable=True, kind='split_volume')
+
+    def test_a_split_post_is_stored_from_all_its_volumes(self, world, monkeypatch):
+        asked = []
+
+        def volumes(post, directory):
+            asked.append(post['id'])
+            return world.good_host('mediafire')(f'https://mf/{post["dbid"]}', directory)
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', self._volume, volumes=volumes)])
+        world.setup(list(range(1, 4)), [])
+        world.run(workers=1, max_consecutive_failures=1)
+        posts = pd.read_parquet(world.uploads[-1][1] / 'posts.parquet')
+        assert sorted(posts['dbid']) == [1, 2, 3] and sorted(asked) == ['post-1', 'post-2', 'post-3']
+
+    def test_a_host_without_a_volumes_route_just_passes_on(self, world, monkeypatch):
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', self._volume)])
+        world.setup(list(range(1, 5)), [])
+        world.run(workers=1, max_consecutive_failures=1)
+        assert not package_commits(world)
+
+    def test_a_volumes_route_that_refuses_passes_on_without_a_failure(self, world, monkeypatch):
+        def volumes(post, directory):
+            raise DownloadError('too big', unusable=True, kind='split_volume')
+
+        monkeypatch.setattr(st, 'HOSTS', [Host('mediafire', self._volume, volumes=volumes)])
+        world.setup(list(range(1, 5)), [])
+        world.run(workers=1, max_consecutive_failures=1)
+        assert not package_commits(world)
