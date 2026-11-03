@@ -31,14 +31,15 @@ on:
         description: 'Download, unpack and repack, but upload nothing.'
         required: false
         default: 'false'
-  # Four times a day, six hours apart, starting an hour after the asiaon index (04:25 UTC) so the index has
-  # published before the first run reads it; the cosplaytele storage (09:25 UTC) has its own slot. A run
-  # stops starting new posts after five hours and needs about twenty more minutes to finish and upload its
-  # last batch, so consecutive runs leave a gap of about forty minutes and do not queue. The backlog is worked
-  # off newest first across as many runs as it takes. Runs never overlap: the concurrency group queues a
-  # second one behind the first, because each commit rewrites the tables from a snapshot read at start.
+  # Twice a day, twelve hours apart. The backlog has been worked off: the posts that are still unstored are a
+  # handful whose packages cannot be had (archives refused as unsafe, broken downloads), and the site adds
+  # about 130 posts a day, roughly 70 GB, which a single run of five hours takes in several times over. The
+  # second run is there to cover a trigger that GitHub drops or delays, which has happened. The asiaon index
+  # (04:25 UTC) has usually published before the first run; if not, its newest posts wait for the next one.
+  # Runs never overlap: the concurrency group queues a second one behind the first, because each commit
+  # rewrites the tables from a snapshot read at start.
   schedule:
-    - cron: '25 5,11,17,23 * * *'
+    - cron: '25 6,18 * * *'
 
 concurrency:
   group: ao-storage
