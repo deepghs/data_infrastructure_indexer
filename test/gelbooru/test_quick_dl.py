@@ -153,10 +153,10 @@ class TestHelpers:
     def test_every_image_host_becomes_img4(self, url, expected):
         assert q.download_url(url) == expected
 
-    def test_candidates_skip_covered_nonimages_and_rows_without_a_checksum_and_come_newest_first(self):
+    def test_candidates_skip_covered_nonimages_and_rows_without_a_checksum_and_come_oldest_first(self):
         rows = [row(5), row(6, mimetype='video/webm'), {**row(7), 'md5': None}, row(8), row(9), row(10)]
         out = q.scan_candidates(iter(rows), covered_ids={9})
-        assert [r['id'] for r in out] == [10, 8, 5]
+        assert [r['id'] for r in out] == [5, 8, 10]
         assert all(r['file_url'].startswith('https://img4.gelbooru.com/') for r in out)
 
     def test_a_volume_stops_at_the_file_cap_and_at_the_byte_budget(self):
@@ -257,9 +257,9 @@ class TestTheHostsAnswers:
         assert 6 in set(table['id']) and meta['bad_image_ids'] == []
 
     def test_when_the_control_download_fails_nothing_is_recorded_bad(self, world):
-        # post 8 is the newest, so it is downloaded first and becomes the control; it then stops answering
+        # post 5 is the oldest, so it is downloaded first and becomes the control; it then stops answering
         world.rows = [row(i) for i in range(5, 9)]
-        world.web.set('https://img4.gelbooru.com/images/aa/bb/8.png', 'ok', 404)
+        world.web.set('https://img4.gelbooru.com/images/aa/bb/5.png', 'ok', 404)
         world.web.set('https://img4.gelbooru.com/images/aa/bb/6.png', 404)
         world.run(retries=2, diagnose_attempts=2)
         table, meta, _ = check_commit(world.uploads[0][1])

@@ -275,7 +275,7 @@ def _iter_index_rows(src_repository: str, src_revision: str) -> Iterator[dict]:
 
 def scan_candidates(rows: Iterator[dict], covered_ids: set) -> List[dict]:
     """
-    The posts still to download, newest id first, each with the url it is downloaded from.
+    The posts still to download, oldest id first, each with the url it is downloaded from.
 
     Only images with a url and an md5 qualify: without the md5 a download could not be told from the
     host's hotlink page.
@@ -289,7 +289,7 @@ def scan_candidates(rows: Iterator[dict], covered_ids: set) -> List[dict]:
         if not row['file_url'] or not row['md5']:
             continue
         candidates.append({**row, 'id': int(row['id']), 'file_url': download_url(row['file_url'])})
-    candidates.sort(key=lambda x: x['id'], reverse=True)
+    candidates.sort(key=lambda x: x['id'])
     return candidates
 
 
@@ -407,8 +407,8 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
     if not candidates:
         logging.info('No candidate to download, quit.')
         return
-    logging.info(f'{plural_word(len(candidates), "candidate")} to download, ids {candidates[-1]["id"]} - '
-                 f'{candidates[0]["id"]}, about '
+    logging.info(f'{plural_word(len(candidates), "candidate")} to download, ids {candidates[0]["id"]} - '
+                 f'{candidates[-1]["id"]}, about '
                  f'{sum(estimate_bytes(x) for x in candidates) / 1024 ** 4:.2f} TB estimated.')
 
     pool = GelbooruSessionPool(size=download_workers + 2)
@@ -610,7 +610,7 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
                         stats['suspect'] -= 1
 
             shutil.rmtree(stage_dir, ignore_errors=True)
-            pending = sorted(deferred, key=lambda x: x['id'], reverse=True) + rest
+            pending = sorted(deferred, key=lambda x: x['id']) + rest
 
             attempted = len(plan) - stats['deferred']
             logging.info(f'Rate limiter settled at {rate_limiter.rate:.1f} req/s after {rate_limiter.throttles} '
