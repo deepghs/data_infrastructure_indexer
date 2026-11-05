@@ -19,6 +19,7 @@ _WORKFLOW_ENTRYPOINT_MODULES = [
     'inf.e621.dbsquash',
     'inf.e621.tags',
     'inf.gelbooru.index_prev',
+    'inf.gelbooru.quick_dl',
     'inf.gelbooru.dbsquash',
     'inf.gelbooru.tags',
     'inf.konachan.index',
