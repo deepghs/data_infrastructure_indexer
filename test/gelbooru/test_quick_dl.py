@@ -166,6 +166,19 @@ class TestHelpers:
         assert q.take_volume(rows, max_volume_files=100, max_volume_bytes=per_post * 3) == 3
         assert q.take_volume(rows, max_volume_files=100, max_volume_bytes=1) == 1  # one post at least
 
+    def test_the_size_scale_stretches_or_shrinks_what_a_volume_plans_to_hold(self):
+        rows = [{**row(i), 'width': 1000, 'height': 1000} for i in range(1, 100)]
+        per_post = q.estimate_bytes(rows[0])
+        assert q.take_volume(rows, max_volume_files=100, max_volume_bytes=per_post * 10) == 10
+        assert q.take_volume(rows, max_volume_files=100, max_volume_bytes=per_post * 10, scale=0.5) == 20
+        assert q.take_volume(rows, max_volume_files=100, max_volume_bytes=per_post * 10, scale=2.0) == 5
+
+    def test_the_estimate_follows_what_the_stored_images_really_weigh(self):
+        # measured on the first 32k stored images: jpeg ~0.27, png ~0.66 bytes per pixel
+        jpeg = q.estimate_bytes({'width': 2000, 'height': 3000, 'mimetype': 'image/jpeg'})
+        png = q.estimate_bytes({'width': 2000, 'height': 3000, 'mimetype': 'image/png'})
+        assert 0.25 * 6e6 < jpeg < 0.30 * 6e6 and 0.6 * 6e6 < png < 0.72 * 6e6
+
     def test_the_classifier_tells_a_suspicion_from_a_verdict(self):
         assert q.classify_error(HttpError(404)) == 'missing'
         assert q.classify_error(HttpError(410)) == 'missing'

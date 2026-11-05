@@ -94,10 +94,12 @@ _TABLE_COLUMNS = ['id', 'filename', 'volume_file', 'file_size', 'mimetype', 'fil
 #: Browser fingerprints rotated through when a session is replaced.
 _FINGERPRINTS = ['chrome131', 'chrome124', 'chrome136', 'chrome123', 'safari17_0', 'firefox135']
 
-#: The index carries no file size. Bytes per pixel by type, measured on runner downloads, used only to
-#: plan how many posts one volume should try to hold; the hard ceiling decides what really fits.
-_BYTES_PER_PIXEL = {'image/jpeg': 0.40, 'image/png': 1.0, 'image/gif': 0.4}
-_DEFAULT_BYTES_PER_PIXEL = 0.6
+#: The index carries no file size. Bytes per pixel by type, measured on the first 32k stored images (the
+#: first guesses of 0.40 / 1.0 planned 10 GB volumes that came out at 6.4-7.1 GB), used only to plan how many
+#: posts one volume should try to hold; the run also rescales them from every finished volume, and the hard
+#: ceiling decides what really fits.
+_BYTES_PER_PIXEL = {'image/jpeg': 0.27, 'image/png': 0.66, 'image/gif': 7.5}
+_DEFAULT_BYTES_PER_PIXEL = 0.45
 
 
 def download_url(file_url: str) -> str:
@@ -293,11 +295,14 @@ def scan_candidates(rows: Iterator[dict], covered_ids: set) -> List[dict]:
     return candidates
 
 
-def take_volume(candidates: List[dict], max_volume_files: int, max_volume_bytes: int) -> int:
-    """The exclusive end of the next volume-sized slice, by estimated bytes; a slice has one post at least."""
+def take_volume(candidates: List[dict], max_volume_files: int, max_volume_bytes: int, scale: float = 1.0) -> int:
+    """
+    The exclusive end of the next volume-sized slice, by estimated bytes times ``scale``; a slice has one
+    post at least.
+    """
     end, total = 0, 0
     while end < len(candidates):
-        size = estimate_bytes(candidates[end])
+        size = estimate_bytes(candidates[end]) * scale
         if end > 0 and (end >= max_volume_files or total + size > max_volume_bytes):
             break
         total += size
@@ -417,6 +422,7 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
                        'Accept-Language': 'en-US,en;q=0.9'}
 
     volumes_done = 0
+    size_scale = 1.0  # real bytes / estimated bytes, learned from the volumes this run has finished
     pending = candidates
     parked: List[dict] = []  # suspects the host would not settle this run; asked again next run
     aborted = False
@@ -434,12 +440,13 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
                             f'floor - stop cleanly.')
             break
 
-        end = take_volume(pending, max_volume_files, max_volume_bytes)
+        end = take_volume(pending, max_volume_files, max_volume_bytes, scale=size_scale)
         plan, rest = pending[:end], pending[end:]
         max_volume_id += 1
         rel_tar, rel_index = _volume_paths(max_volume_id)
         logging.info(f'Building volume #{max_volume_id} ({rel_tar}), {plural_word(len(plan), "post")}, '
-                     f'about {sum(estimate_bytes(x) for x in plan) / 1024 ** 3:.2f} GB planned ...')
+                     f'about {sum(estimate_bytes(x) for x in plan) * size_scale / 1024 ** 3:.2f} GB planned '
+                     f'(size scale {size_scale:.2f}) ...')
 
         with TemporaryDirectory() as td:
             upload_dir = os.path.join(td, 'upload')
@@ -619,6 +626,9 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
                          f'{stats["unusable"]} unusable, {stats["failed"]} failed, {len(parked)} parked, '
                          f'{stats["deferred"]} deferred, {stats["retry"]} retries, '
                          f'{volume_bytes[0] / 1024 ** 3:.2f} GB.')
+            estimated = sum(estimate_bytes(x) for x in new_records)
+            if new_records and estimated > 0:
+                size_scale = min(max(0.5 * size_scale + 0.5 * volume_bytes[0] / estimated, 0.3), 3.0)
             if stats['failed'] and attempted >= min_attempts_for_abort \
                     and stats['failed'] >= attempted * max_failed_ratio:
                 logging.error(f'ABORT: {stats["failed"]} of {attempted} posts failed in volume #{max_volume_id}, '
