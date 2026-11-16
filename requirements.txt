@@ -51,3 +51,6 @@ pyrate-limiter<4
 json_repair>=0.62
 # Fronts the sorafolder share pages and downloads; previously only present through waifuc.
 cloudscraper
+
+# Distribution plots on the fancaps dataset card.
+matplotlib
