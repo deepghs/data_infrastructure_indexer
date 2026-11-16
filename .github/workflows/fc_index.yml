@@ -32,12 +32,12 @@ on:
         description: 'Build everything, upload nothing'
         required: false
         default: 'false'
-  # Not scheduled yet: the trigger is enabled once the smoke runs on a scratch repository are done. Intended
-  # cadence is once a day. A run lists the shows and probes the tail of each one (about 2.7 thousand light
-  # requests), reads the few new episodes, and commits once if it found any. Every seventh day it walks the
-  # whole site instead, which is what catches an episode added while another one was removed in the same show.
-  #  schedule:
-  #    - cron: '17 21 * * *'
+  # Once a day. A run lists the shows and probes the tail of each one (about 2.7 thousand light requests),
+  # reads the few new episodes, and commits if it found any. Every seventh day it walks the whole site
+  # instead, which is what catches an episode added while another one was removed in the same show. Runs never
+  # overlap: the concurrency group queues a second one behind the first.
+  schedule:
+    - cron: '17 21 * * *'
 
 concurrency:
   group: fc-index
