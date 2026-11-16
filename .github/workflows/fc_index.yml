@@ -1,0 +1,136 @@
+#file: noinspection YAMLSchemaValidation
+name: Fancaps Index
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Index repository to publish to (empty means the default, deepghs/fancaps_index)'
+        required: false
+        default: ''
+      max_time_limit:
+        description: 'Stop scheduling episodes after this duration (e.g. 5h, 20m)'
+        required: false
+        default: '5h'
+      deploy_span:
+        description: 'Minimum interval between two commits while episodes keep arriving'
+        required: false
+        default: '1h'
+      workers:
+        description: 'Threads reading episode pages'
+        required: false
+        default: '16'
+      full_walk:
+        description: 'Walk every show completely now instead of probing the tails'
+        required: false
+        default: 'false'
+      max_episodes:
+        description: 'Stop after this many episodes (empty means unlimited; use a small number for a smoke run)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Build everything, upload nothing'
+        required: false
+        default: 'false'
+  # Not scheduled yet: the trigger is enabled once the smoke runs on a scratch repository are done. Intended
+  # cadence is once a day. A run lists the shows and probes the tail of each one (about 2.7 thousand light
+  # requests), reads the few new episodes, and commits once if it found any. Every seventh day it walks the
+  # whole site instead, which is what catches an episode added while another one was removed in the same show.
+  #  schedule:
+  #    - cron: '17 21 * * *'
+
+concurrency:
+  group: fc-index
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  index:
+    name: Fancaps Index
+    runs-on: ${{ matrix.os }}
+    # GitHub hard-kills a job at 360 minutes; leave room for the final commit.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - 'ubuntu-latest'
+        python-version:
+          - '3.11'
+
+    steps:
+      - name: Get system version for Linux
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        shell: bash
+        run: |
+          echo "OS_NAME=Linux" >> $GITHUB_ENV
+          echo "IS_WIN=" >> $GITHUB_ENV
+          echo "IS_MAC=" >> $GITHUB_ENV
+      - name: Set environment for Cpython
+        if: ${{ !contains(matrix.python-version, 'pypy') }}
+        shell: bash
+        run: |
+          echo "IS_PYPY=" >> $GITHUB_ENV
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 20
+          submodules: 'recursive'
+      - name: Set up system dependencies on Linux
+        if: ${{ env.OS_NAME == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree wget curl make zip
+          sudo apt-get install -y git-lfs
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Test the basic environment
+        shell: bash
+        run: |
+          python -V
+          pip --version
+          df -h /
+          free -h
+      - name: Run index
+        env:
+          CI: 'true'
+          HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
+          HF_HUB_ENABLE_HF_TRANSFER: '1'
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REPOSITORY: ${{ github.event.inputs.repository || '' }}
+          MAX_TIME_LIMIT: ${{ github.event.inputs.max_time_limit || '5h' }}
+          DEPLOY_SPAN: ${{ github.event.inputs.deploy_span || '1h' }}
+          WORKERS: ${{ github.event.inputs.workers || '16' }}
+          FULL_WALK: ${{ github.event.inputs.full_walk || 'false' }}
+          MAX_EPISODES: ${{ github.event.inputs.max_episodes || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        shell: bash
+        run: |
+          EXTRA=()
+          if [ -n "$REPOSITORY" ]; then
+            EXTRA+=(--repository "$REPOSITORY")
+          fi
+          if [ -n "$MAX_EPISODES" ]; then
+            EXTRA+=(--max-episodes "$MAX_EPISODES")
+          fi
+          if [ "$FULL_WALK" = "true" ]; then
+            EXTRA+=(--full-walk)
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            EXTRA+=(--dry-run)
+          fi
+          python -m inf.fancaps.index \
+            --max-time-limit "$MAX_TIME_LIMIT" \
+            --deploy-span "$DEPLOY_SPAN" \
+            --workers "$WORKERS" \
+            "${EXTRA[@]}"
