@@ -789,14 +789,6 @@ def _load_state(hf_client, repository: str, baseline_repository: str, glob_exist
     return table, extra_covered, bad_image_ids, max_volume_id, baseline, baseline_is_new
 
 
-def _last_publish_time(hf_client, repository: str) -> Optional[datetime.datetime]:
-    """When the newest volume was committed to the staging repository, or None when it has none yet."""
-    for commit in hf_client.list_repo_commits(repo_id=repository, repo_type='dataset'):
-        if commit.title.startswith('Sync volume'):
-            return commit.created_at
-    return None
-
-
 def _append_rows(staged: Optional[pa.Table], new_records: List[dict], table_columns: List[str]) -> pa.Table:
     """The stored table with a volume's rows added, sorted by id like every table this job has written."""
     if staged is None:
@@ -1053,7 +1045,6 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
          glob_exist_ids_file: str = 'glob_exist_ids.json', max_volumes: Optional[int] = None,
          proxy_pool: Optional[str] = None, proxy_lanes: int = 0, max_lanes: int = 64, direct: Optional[bool] = None,
          rate_per_ip: float = 2.5, max_retired: Optional[int] = None, plan_margin: float = 1.2,
-         min_publish_bytes: int = 0, max_publish_interval: Optional[float] = None, force: bool = False,
          retries: int = 6, retry_wait: float = 2.0,
          max_failed_ratio: float = 0.3, min_attempts_for_abort: int = 20, missing_retries: int = 2,
          diagnose_attempts: int = 2, diagnose_wait: float = 2.0, dry_run: bool = False,
@@ -1072,12 +1063,6 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
     :param direct: Use this host's own address as a slot as well; by default only when there is no proxy.
     :param rate_per_ip: Requests per second one address may carry, the ceiling measured safe is 3.
     :param max_retired: Addresses retired by the CDN after which the run stops.
-    :param min_publish_bytes: Publish nothing unless at least this many bytes (estimated) are pending, and never
-        publish a trailing volume below it. Zero turns the bar off. This is what keeps the volumes of a scheduled job
-        from being small when the site was quiet for a few days.
-    :param max_publish_interval: Seconds after the newest volume past which the bar is waived, so that data cannot lag
-        behind forever when the site is quiet; None never waives it.
-    :param force: Waive the bar for this run.
     :param plan_margin: A volume is planned for this many times its byte budget and sealed when the bytes really
         written reach the budget; see :func:`take_volume`.
     :param retries: Attempts per image before it counts as failed.
@@ -1126,25 +1111,6 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
     if staged is not None:
         logging.info(f'Planning with a size scale of {size_scale:.2f} from the newest stored rows.')
 
-    # The bar below which a run is not worth a volume of its own.
-    waived = force or min_publish_bytes <= 0
-    if not waived:
-        pending_estimate = candidates.num_rows * estimate_bytes() * size_scale
-        if pending_estimate < min_publish_bytes:
-            last = _last_publish_time(hf_client, repository)
-            age = None if last is None else (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds()
-            if max_publish_interval is not None and (age is None or age >= max_publish_interval):
-                logging.info(f'Only about {pending_estimate / 1024 ** 3:.2f} GB is pending, below the '
-                             f'{min_publish_bytes / 1024 ** 3:.2f} GB bar, but the newest volume is '
-                             f'{"missing" if age is None else f"{age / 86400:.1f} days old"}: publishing anyway.')
-                waived = True
-            else:
-                logging.info(f'Only about {pending_estimate / 1024 ** 3:.2f} GB is pending, below the '
-                             f'{min_publish_bytes / 1024 ** 3:.2f} GB bar and the newest volume is '
-                             f'{"missing" if age is None else f"{age / 86400:.1f} days old"}: nothing to publish '
-                             f'this time.')
-                return
-
     if pool is None:
         pool = EgressPool(proxy_url=proxy_pool, lanes=proxy_lanes if proxy_pool else 0, max_lanes=max_lanes,
                           direct=(not proxy_pool) if direct is None else direct, rate_per_ip=rate_per_ip,
@@ -1178,11 +1144,6 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
                             f'floor - stop cleanly.')
             break
 
-        if not waived and pending.num_rows * estimate_bytes() * size_scale < min_publish_bytes:
-            logging.info(f'The remaining {plural_word(pending.num_rows, "image")} (about '
-                         f'{pending.num_rows * estimate_bytes() * size_scale / 1024 ** 3:.2f} GB) are below the '
-                         f'{min_publish_bytes / 1024 ** 3:.2f} GB bar, left for a later run.')
-            break
         end = take_volume(pending.num_rows, max_volume_files, max_volume_bytes, scale=size_scale, margin=plan_margin)
         plan, rest = _rows(pending.slice(0, end)), pending.slice(end)
         max_volume_id += 1
@@ -1587,13 +1548,6 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
               help='Plan this many times the byte budget per volume. The volume is sealed when the bytes written reach '
                    'the budget and topped up when they fall short, so its size does not depend on how well the image '
                    'size was guessed.')
-@click.option('--min-publish-bytes', type=int, default=0, show_default=True,
-              help='Publish nothing unless this many bytes (estimated) are pending, and never a trailing volume '
-                   'below it. Keeps scheduled volumes from being small. Zero turns the bar off.')
-@click.option('--max-publish-interval', type=duration_type(allow_none=True), default=None,
-              help='Waive the bar once the newest volume is this old (for example 25d), so that a quiet site cannot '
-                   'leave data unpublished forever. Default: never.')
-@click.option('--force', is_flag=True, default=False, help='Waive the bar for this run.')
 @click.option('--max-retired', type=int, default=None,
               help='Addresses retired by the CDN after which the run stops (default: half the slots plus one).')
 @click.option('-d', '--min-free-disk', type=int, default=24 * 1024 ** 3, show_default=True,
@@ -1616,8 +1570,7 @@ def sync(repository: str, src_repository: str, baseline_repository: str, src_rev
 def cli(repository: str, src_repository: str, baseline_repository: str, src_revision: str,
         max_time_limit: Optional[float], max_volume_files: int, max_volume_bytes: int, max_volume_hard_bytes: int,
         proxy_pool: Optional[str], proxy_lanes: int, max_lanes: int, direct: Optional[bool], workers_per_lane: int,
-        rate_per_ip: float, max_retired: Optional[int], plan_margin: float, min_publish_bytes: int,
-        max_publish_interval: Optional[float], force: bool, min_free_disk: int, upload_time_span: float,
+        rate_per_ip: float, max_retired: Optional[int], plan_margin: float, min_free_disk: int, upload_time_span: float,
         max_volumes: Optional[int], retries: int, retry_wait: float, max_failed_ratio: float,
         missing_retries: int, diagnose_attempts: int, diagnose_wait: float, dry_run: bool):
     logging.try_init_root(logging.INFO)
@@ -1630,7 +1583,6 @@ def cli(repository: str, src_repository: str, baseline_repository: str, src_revi
          max_volumes=max_volumes, proxy_pool=proxy_pool or None, proxy_lanes=proxy_lanes, max_lanes=max_lanes,
          direct=direct,
          rate_per_ip=rate_per_ip, max_retired=max_retired, plan_margin=plan_margin,
-         min_publish_bytes=min_publish_bytes, max_publish_interval=max_publish_interval, force=force,
          retries=retries, retry_wait=retry_wait,
          max_failed_ratio=max_failed_ratio, missing_retries=missing_retries, diagnose_attempts=diagnose_attempts,
          diagnose_wait=diagnose_wait, dry_run=dry_run)
