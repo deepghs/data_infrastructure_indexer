@@ -20,18 +20,6 @@ on:
         description: 'Requests per second one egress address may carry (measured on hosted runners: 3.5 for 25 minutes without a single block, Cloudflare error 1015 starts at about 4 and bans the address for an hour)'
         required: false
         default: '3.0'
-      min_publish_gb:
-        description: 'Publish nothing unless this many GB are pending, and never a trailing volume below it (0 turns the bar off)'
-        required: false
-        default: '6'
-      max_publish_days:
-        description: 'Waive the bar once the newest volume is this many days old (empty never waives it)'
-        required: false
-        default: '25'
-      force:
-        description: 'Waive the bar for this run'
-        required: false
-        default: 'false'
       use_proxy:
         description: 'Add the Bright Data proxy pool as extra egress addresses (needs a zone that accepts any client address)'
         required: false
@@ -45,15 +33,13 @@ on:
         required: false
         default: 'false'
   # Three runs a week, Monday, Wednesday and Friday, a little after the daily index job has had time to finish
-  # (GitHub starts scheduled runs hours late, the index job lands between 01:00 and 05:00 UTC).
+  # (GitHub starts scheduled runs hours late, the index job lands between 01:00 and 05:00 UTC). Every run brings the
+  # staging repository up to date with the index, whatever there is, and publishes it as it is.
   #
   # What a run can do. One hosted runner has one address, which Cloudflare lets through at about 3.5 requests a
-  # second. At the 3.0 used here, five hours are about 54,000 images, about 8.6 GB, so a run publishes one volume.
-  # What the site produces. About 3 to 17 GB a week, 6 GB in the first measured week; the mean image is 159 KB.
-  # So a run every two or three days finds 1 to 7 GB pending, which would be a small volume on a quiet week. The
-  # bar makes the schedule safe on both sides: a run publishes only when about 6 GB are pending (volumes come out at
-  # 6 to 8 GB) and a pending tail below the bar waits for a later run; once the newest volume is 25 days old the bar
-  # is waived, so data never lags by more than about a month. A skipped run costs about three minutes.
+  # second. At the 3.0 used here, five hours are about 54,000 images, about 8.6 GB, so a run publishes one volume at
+  # most; what does not fit waits for the next run. The site produces about 3 to 17 GB a week (6 GB in the first
+  # measured week, the mean image is 159 KB), so three runs a week keep up and never lag by more than a few days.
   #
   # Runs never overlap: the concurrency group queues a second one behind the first, because each commit rewrites the
   # table from a snapshot read at start. Do not run this while another process is writing to the same repository.
@@ -156,16 +142,13 @@ jobs:
           MAX_VOLUMES: ${{ github.event.inputs.max_volumes || '' }}
           WORKERS_PER_LANE: ${{ github.event.inputs.workers_per_lane || '3' }}
           RATE_PER_IP: ${{ github.event.inputs.rate_per_ip || '3.0' }}
-          MIN_PUBLISH_GB: ${{ github.event.inputs.min_publish_gb || '6' }}
-          MAX_PUBLISH_DAYS: ${{ github.event.inputs.max_publish_days || '25' }}
-          FORCE: ${{ github.event.inputs.force || 'false' }}
           USE_PROXY: ${{ github.event.inputs.use_proxy || 'false' }}
           PROXY_LANES: ${{ github.event.inputs.proxy_lanes || '8' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         shell: bash
         run: |
           is_number() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
-          for name in RATE_PER_IP MIN_PUBLISH_GB WORKERS_PER_LANE PROXY_LANES; do
+          for name in RATE_PER_IP WORKERS_PER_LANE PROXY_LANES; do
             if ! is_number "${!name}"; then echo "Input $name is not a number: ${!name}"; exit 2; fi
           done
           EXTRA=()
@@ -174,15 +157,6 @@ jobs:
           fi
           if [ "$DRY_RUN" = "true" ]; then
             EXTRA+=(--dry-run)
-          fi
-          if [ "$FORCE" = "true" ]; then
-            EXTRA+=(--force)
-          fi
-          MIN_BYTES=$(awk -v g="$MIN_PUBLISH_GB" 'BEGIN { printf "%d", g * 1073741824 }')
-          EXTRA+=(--min-publish-bytes "$MIN_BYTES")
-          if [ -n "$MAX_PUBLISH_DAYS" ]; then
-            if ! is_number "$MAX_PUBLISH_DAYS"; then echo "Input MAX_PUBLISH_DAYS is not a number: $MAX_PUBLISH_DAYS"; exit 2; fi
-            EXTRA+=(--max-publish-interval "${MAX_PUBLISH_DAYS}d")
           fi
           # The runner's own address is always one egress slot (--direct); the proxy pool adds more.
           if [ "$USE_PROXY" = "true" ] && [ -n "$BRD_PROXY_URL" ]; then
@@ -202,7 +176,7 @@ jobs:
             {
               echo '### Fancaps Quick DL'
               echo '```text'
-              tr '\r' '\n' < quick_dl.log | grep -E 'candidates to download|bar|Egress ready|Building volume|Volume #[0-9]+ downloaded|UPLOAD volume #[0-9]+ done|RETIRE|BREAKER|ABORT|Done,|Traceback|Error' | cut -c1-240 | tail -n 60
+              tr '\r' '\n' < quick_dl.log | grep -E 'candidates to download|No candidate|Egress ready|Building volume|Volume #[0-9]+ downloaded|UPLOAD volume #[0-9]+ done|RETIRE|BREAKER|ABORT|Done,|Traceback|Error' | cut -c1-240 | tail -n 60
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
