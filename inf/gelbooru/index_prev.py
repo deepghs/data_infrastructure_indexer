@@ -64,6 +64,28 @@ _NAME_TO_TAG_TYPE['tag'] = _NAME_TO_TAG_TYPE['general']
 _ARCHIVE_REPO = 'NebulaeWis/gelbooru_images_fornarugo'
 _INDEX_REPO = 'narugo/gelbooru_images_fornarugo_index'
 
+#: The deepest page ``pid`` the post listing serves at 100 posts a page. Probed on 2026-11-25: ``pid=10``
+#: answers with JSON, ``pid=11`` and everything past it answers HTTP 200 with the plain text
+#: ``Too deep! Pull it back some.`` instead. A walk deeper than this crashed on ``resp.json()``, so older
+#: posts have to be reached by re-anchoring the next batch with ``id:<N`` rather than by paging further.
+_MAX_POST_PID = 10
+_TOO_DEEP_MARKER = 'Too deep!'
+
+
+def _flush_on_failure(items, flush):
+    """
+    Yield everything from ``items``; if it raises, call ``flush`` first and let the error go on.
+
+    The sync loop only publishes every few minutes, so an exception from the upstream walk used to
+    discard whatever had been collected since the last publish. With the walk crashing within seconds of
+    the first post, that left exactly one record in the index per run.
+    """
+    try:
+        yield from items
+    except Exception:
+        flush()
+        raise
+
 
 def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
                        tags: List[str] = None, max_tries: int = 5, session=None,
@@ -118,8 +140,13 @@ def _get_posts_by_page(p: Optional[int] = None, id_: Optional[int] = None,
         else:
             break
 
-    if 'post' in resp.json():
-        return resp.json()['post']
+    if resp.text.lstrip().startswith(_TOO_DEEP_MARKER):
+        logging.warning(f'Page {p!r} is deeper than the site serves, treated as empty.')
+        return []
+
+    data = resp.json()
+    if 'post' in data:
+        return data['post']
     else:
         return []
 
@@ -368,7 +395,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
                 extra_tags = [f'id:<{min_newest_id}']
             else:
                 extra_tags = []
-            for pid in range(0, 201):
+            for pid in range(0, _MAX_POST_PID + 1):
                 has_item = False
                 for item in _get_posts_by_page(p=pid, tags=extra_tags, session=session,
                                                limiter=r_limiter, user_id=user_id, api_key=api_key):
@@ -419,7 +446,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             _yield_from_newest(),
             _yield_from_blind(),
         )
-    for item in source:
+    for item in _flush_on_failure(source, lambda: _deploy(force=True)):
         if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
         if item['change'] and item['change'] + no_recent > time.time():
