@@ -11,13 +11,15 @@ count, and 0.21 days is short enough that a busy or quiet few hours would move i
 right order of magnitude rather than a precise rate.
 """
 import base64
+import datetime
 import json
 import math
 import mimetypes
 import os
 import time
 from itertools import chain
-from typing import Optional, List
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 import click
 import httpx
@@ -88,7 +90,193 @@ def _get_posts(session: Optional[requests.Session] = None,
     logging.info(f'Query posts: {params!r} ...')
     resp = session.get('https://e621.net/posts.json', params=params)
     resp.raise_for_status()
-    return sorted(resp.json()['posts'], key=lambda x: x['id'])
+    return sorted(_posts_of(resp.json()), key=lambda x: x['id'])
+
+
+def _posts_of(payload) -> List[dict]:
+    """
+    The posts of one ``posts.json`` answer, whichever shape the site serves.
+
+    Until e621ng 26.11 the answer was ``{"posts": [...]}``; since then it is the bare list. Anything else
+    is an error and is raised, so that a blocked or changed upstream cannot pass for "no new posts".
+    """
+    if isinstance(payload, dict) and isinstance(payload.get('posts'), list):
+        return payload['posts']
+    if isinstance(payload, list):
+        return payload
+    raise ValueError(f'Unexpected posts.json answer of type {type(payload).__name__}: {str(payload)[:120]!r}')
+
+
+class TagCategories:
+    """
+    Which category (general, artist, ...) a tag belongs to.
+
+    Since e621ng 26.11 a post carries its tags as one flat list, without the category the old answer grouped
+    them by, and the table keeps that grouping in its tag statistics. The category is therefore looked up:
+    first in what is already known (the tag table of the repository and the statistics this job keeps),
+    otherwise once from ``tags.json``; the answer is remembered, so a tag is looked up at most once ever.
+
+    :param known: Tag name to category id already known.
+    :param fetch: ``name -> tags.json item or None``, called only for a tag that is not known.
+    """
+
+    def __init__(self, known: Dict[str, int], fetch: Callable[[str], Optional[dict]]):
+        self._category = dict(known)
+        self._fetch = fetch
+        self.fetched: Dict[str, dict] = {}
+        self.unresolved: List[str] = []
+
+    def category_of(self, name: str) -> int:
+        if name not in self._category:
+            item = self._fetch(name)
+            if item is None:
+                logging.warning(f'Tag {name!r} is not known to tags.json either, filed under general.')
+                self.unresolved.append(name)
+                self._category[name] = 0
+            else:
+                self._category[name] = int(item['category'])
+                self.fetched[name] = item
+        return self._category[name]
+
+    def split(self, names: Sequence[str]) -> Dict[str, List[str]]:
+        """Tag names grouped by category name, in the shape the old answer had."""
+        grouped: Dict[str, List[str]] = {}
+        for name in names:
+            category = self.category_of(name)
+            grouped.setdefault(_TAG_CATEGORIES.get(category, str(category)), []).append(name)
+        # The old answer listed the categories in the site's own order; the tags column is their concatenation.
+        order = len(_TAG_INV_CATEGORIES)
+        return {key: grouped[key] for key in sorted(grouped, key=lambda k: _TAG_INV_CATEGORIES.get(k, order))}
+
+
+def _tag_fetcher(session, limiter: Optional[Limiter] = None) -> Callable[[str], Optional[dict]]:
+    """``name -> tags.json item`` for one exact tag name, or None when the site has no such tag."""
+
+    def fetch(name: str) -> Optional[dict]:
+        if limiter is not None:
+            limiter.try_acquire('e621 tag lookup')
+        resp = session.get('https://e621.net/tags.json', params={'search[name_matches]': name, 'limit': '20'})
+        resp.raise_for_status()
+        payload = resp.json()
+        items = payload.get('tags', []) if isinstance(payload, dict) else payload
+        return next((item for item in items if item.get('name') == name), None)
+
+    return fetch
+
+
+#: The zone the stored timestamps are written in. The old answer was in Europe/Berlin (``+01:00`` in winter, ``+02:00``
+#: in summer); the new one is in America/New_York (``-05:00``). They are the same instants, so they are converted
+#: back to keep one text format in the column.
+_STORED_ZONE = ZoneInfo('Europe/Berlin')
+
+
+def _stored_time(text: Optional[str]) -> Optional[str]:
+    """A timestamp of the site's answer in the zone and format of the stored column."""
+    if not text:
+        return text
+    return datetime.datetime.fromisoformat(text).astimezone(_STORED_ZONE).isoformat(timespec='milliseconds')
+
+
+def _legacy_post(post: dict, categories: TagCategories) -> dict:
+    """
+    A post in the shape ``posts.json`` had until e621ng 26.11, from the shape it has now.
+
+    The new answer replaced ``file``, ``preview``, ``sample`` and ``score`` by ``files`` and ``stats``, moved the
+    booleans about relationships into ``has`` and flattened ``tags``. Mapping it back keeps every column of the table
+    exactly as it was, whichever shape the site serves. A post that is already in the old shape is returned as it is.
+    """
+    if 'files' not in post:
+        return post
+    files, stats, has = post['files'] or {}, post.get('stats') or {}, post.get('has') or {}
+    meta, original = files.get('meta') or {}, files.get('original') or {}
+    preview, sample = files.get('preview') or {}, files.get('sample') or {}
+    relationships = post.get('relationships') or {}
+    return {
+        'id': post['id'],
+        'created_at': _stored_time(post['created_at']),
+        'updated_at': _stored_time(post['updated_at']),
+        'change_seq': post.get('change_seq'),
+        'uploader_id': post.get('uploader_id'),
+        'uploader_name': post.get('uploader_name'),
+        'approver_id': post.get('approver_id'),
+        'rating': post.get('rating'),
+        'description': post.get('description'),
+        'locked_tags': post.get('locked_tags', []),
+        'sources': post.get('sources', []),
+        'pools': post.get('pools', []),
+        'file': {'width': original.get('width'), 'height': original.get('height'), 'ext': meta.get('ext'),
+                 'size': meta.get('size'), 'md5': meta.get('md5'), 'url': original.get('url')},
+        'preview': {'width': preview.get('width'), 'height': preview.get('height'), 'url': preview.get('jpg'),
+                    'alt': preview.get('webp')},
+        # Without a sample the old answer had no sample urls, while the new one repeats the original's in both.
+        'sample': {'has': has.get('sample'), 'width': sample.get('width'), 'height': sample.get('height'),
+                   'url': sample.get('jpg') if has.get('sample') else None,
+                   'alt': sample.get('webp') if has.get('sample') else None,
+                   # What used to be ``sample.alternates`` is now ``files.video``, with the same layout.
+                   'alternates': files.get('video') or {}},
+        'score': stats.get('score') or {'up': None, 'down': None, 'total': None},
+        'flags': post.get('flags') or {},
+        'relationships': {'parent_id': relationships.get('parent_id'), 'has_children': has.get('children'),
+                          'has_active_children': has.get('active_children'),
+                          'children': relationships.get('children', [])},
+        'fav_count': stats.get('fav_count'),
+        'comment_count': stats.get('comment_count'),
+        'is_favorited': stats.get('is_favorited'),
+        'vote': stats.get('vote'),
+        'has_notes': has.get('notes'),
+        'duration': meta.get('duration'),
+        'tags': categories.split(post.get('tags') or []),
+    }
+
+
+def _row_of(post: dict) -> Tuple[dict, Dict[str, List[str]]]:
+    """One table row from a post in the old shape (see :func:`_legacy_post`), and its tags grouped by category."""
+    file_info = post.pop('file')
+    flags_info = post.pop('flags')
+    preview_info = post.pop('preview')
+    sample_info = post.pop('sample')
+    score_info = post.pop('score')
+    tags_info = post.pop('tags')
+    relationships_info = post.pop('relationships')
+    if file_info['url']:
+        mimetype, _ = mimetypes.guess_type(file_info['url'])
+    else:
+        mimetype = None
+
+    row = {
+        'id': post['id'],
+
+        'mimetype': mimetype,
+        'file_ext': file_info['ext'],
+        'width': file_info['width'],
+        'height': file_info['height'],
+        'md5': file_info['md5'],
+        'file_url': file_info['url'],
+        'file_size': file_info['size'],
+        'rating': post['rating'],
+
+        'tags': list(chain(*tags_info.values())),
+
+        'uploader_id': post['uploader_id'],
+        'approver_id': post['approver_id'],
+
+        'score': score_info['total'],
+        'up_score': score_info['up'],
+        'down_score': score_info['down'],
+        'fav_count': post['fav_count'],
+
+        **{f'preview_{key}': value for key, value in preview_info.items()},
+        **{f'sample_{key}': value for key, value in sample_info.items()},
+        **{f'is_{key}': value for key, value in flags_info.items()},
+
+        **relationships_info,
+        **post,
+
+        'created_at': post['created_at'],
+        'updated_at': post['updated_at'],
+    }
+    row['sample_alternates'] = _parquet_safe(row['sample_alternates'])
+    return row, tags_info
 
 
 def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float = 30.0,
@@ -329,9 +517,16 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
         yield from _iter_down()
         # yield from _iter_up()
 
+    known_categories = {}
+    for category_id, tag_name in chain(d_origin_tags, d_tags):
+        known_categories[tag_name] = category_id
+    categories = TagCategories(known_categories, _tag_fetcher(
+        session, Limiter(Rate(2, Duration.SECOND), max_delay=1 << 32)))
+
     for post in _iter_posts():
         if max_time_limit is not None and start_time + max_time_limit < time.time():
             break
+        post = _legacy_post(post, categories)
         if post['id'] in exist_ids:
             logging.warning(f'Post {post["id"]!r} already exist, skipped.')
             continue
@@ -340,51 +535,7 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
             continue
 
         logging.info(f'Post {post["id"]!r} confirmed.')
-        file_info = post.pop('file')
-        flags_info = post.pop('flags')
-        preview_info = post.pop('preview')
-        sample_info = post.pop('sample')
-        score_info = post.pop('score')
-        tags_info = post.pop('tags')
-        relationships_info = post.pop('relationships')
-        if file_info['url']:
-            mimetype, _ = mimetypes.guess_type(file_info['url'])
-        else:
-            mimetype = None
-
-        row = {
-            'id': post['id'],
-
-            'mimetype': mimetype,
-            'file_ext': file_info['ext'],
-            'width': file_info['width'],
-            'height': file_info['height'],
-            'md5': file_info['md5'],
-            'file_url': file_info['url'],
-            'file_size': file_info['size'],
-            'rating': post['rating'],
-
-            'tags': list(chain(*tags_info.values())),
-
-            'uploader_id': post['uploader_id'],
-            'approver_id': post['approver_id'],
-
-            'score': score_info['total'],
-            'up_score': score_info['up'],
-            'down_score': score_info['down'],
-            'fav_count': post['fav_count'],
-
-            **{f'preview_{key}': value for key, value in preview_info.items()},
-            **{f'sample_{key}': value for key, value in sample_info.items()},
-            **{f'is_{key}': value for key, value in flags_info.items()},
-
-            **relationships_info,
-            **post,
-
-            'created_at': post['created_at'],
-            'updated_at': post['updated_at'],
-        }
-        row['sample_alternates'] = _parquet_safe(row['sample_alternates'])
+        row, tags_info = _row_of(post)
         records.append(row)
 
         for key, values in tags_info.items():
@@ -400,6 +551,14 @@ def sync(repository: str, deploy_span: float = 5 * 60, upload_time_span: float =
                             'category': d_origin_tags[token]['category'],
                             'count': 0,
                             'total_count': d_origin_tags[token]['post_count']
+                        }
+                    elif tag_name in categories.fetched:
+                        d_tags[token] = {
+                            'id': categories.fetched[tag_name]['id'],
+                            'name': tag_name,
+                            'category': category_id,
+                            'count': 0,
+                            'total_count': categories.fetched[tag_name].get('post_count', -1),
                         }
                     else:
                         d_tags[token] = {
