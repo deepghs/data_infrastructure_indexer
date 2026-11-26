@@ -16,10 +16,8 @@ import time
 from typing import Optional
 
 import click
-import httpx
 import numpy as np
 import pandas as pd
-import requests.exceptions
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
@@ -29,7 +27,7 @@ from pyrate_limiter import Rate, Duration, Limiter
 
 from inf.utils.duration import duration_type
 from inf.utils.safe import safe_hf_hub_download, safe_upload_directory_as_directory
-from inf.utils.session import get_requests_session, srequest
+from inf.utils.session import open_browser_session, srequest
 
 mimetypes.add_type('image/webp', '.webp')
 _TAG_TYPES = {
@@ -180,17 +178,7 @@ def sync(repository: str, max_time_limit: Optional[float] = 50 * 60, upload_time
             _last_update = time.time()
             _total_count = len(df_records)
 
-    while True:
-        session = get_requests_session()
-        logging.info(f'Try new session, UA: {session.headers["User-Agent"]!r}.')
-        try:
-            _ = srequest(session, 'GET', 'https://yande.re/tag.json')
-        except (httpx.HTTPError, requests.exceptions.RequestException) as err:
-            logging.info(f'Retrying session - {err!r}.')
-            continue
-        else:
-            logging.info('Try success.')
-            break
+    session = open_browser_session('https://yande.re/tag.json')
 
     def _get_page(page_no):
         logging.info(f'Getting page {page_no!r} ...')

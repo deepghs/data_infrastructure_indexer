@@ -212,6 +212,40 @@ def srequest(session: Union[requests.Session, List[requests.Session]], method, u
     return resp
 
 
+def get_browser_session(impersonate: str = 'safari17_0', timeout: int = DEFAULT_TIMEOUT):
+    """
+    A ``curl_cffi`` session that presents a real browser's TLS and HTTP/2 fingerprint.
+
+    Some Cloudflare-fronted sites (yande.re from GitHub-hosted runners) refuse the ``requests`` fingerprint with a
+    challenge page but serve this one. The session is a drop-in for :func:`srequest`, whose retry clause also
+    covers the ``curl_cffi`` error classes.
+    """
+    from curl_cffi import requests as cffi_requests
+    return cffi_requests.Session(impersonate=impersonate, timeout=timeout)
+
+
+def open_browser_session(probe_url: str, attempts: int = 10, sleep_time: float = 5.0, **kwargs):
+    """
+    A browser-fingerprint session that has been proven to reach ``probe_url``.
+
+    The probe is retried with a fresh session each time; when every attempt fails the last error is raised, so a
+    site that stays blocked ends the job instead of looping forever.
+    """
+    last_error: Optional[BaseException] = None
+    for attempt in range(attempts):
+        session = get_browser_session(**kwargs)
+        try:
+            srequest(session, 'GET', probe_url)
+        except REQUEST_ERRORS as err:
+            last_error = err
+            logging.info(f'Retrying session ({attempt + 1}/{attempts}) - {err!r}.')
+            time.sleep(sleep_time)
+        else:
+            logging.info('Try success.')
+            return session
+    raise last_error
+
+
 @lru_cache()
 def _ua_pool():
     software_names = [SoftwareName.CHROME.value, SoftwareName.FIREFOX.value, SoftwareName.EDGE.value]

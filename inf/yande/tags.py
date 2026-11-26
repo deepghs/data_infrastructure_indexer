@@ -1,9 +1,7 @@
 import os
 
 import click
-import httpx
 import pandas as pd
-import requests.exceptions
 from ditk import logging
 from hbutils.string import plural_word
 from hbutils.system import TemporaryDirectory
@@ -11,7 +9,7 @@ from hfutils.operate import get_hf_client, get_hf_fs
 from tqdm import tqdm
 
 from inf.utils.safe import safe_upload_directory_as_directory
-from inf.utils.session import get_requests_session, srequest
+from inf.utils.session import open_browser_session, srequest
 
 
 def sync(repository: str):
@@ -30,17 +28,7 @@ def sync(repository: str):
             os.linesep.join(attr_lines),
         )
 
-    while True:
-        session = get_requests_session()
-        logging.info(f'Try new session, UA: {session.headers["User-Agent"]!r}.')
-        try:
-            _ = srequest(session, 'GET', 'https://yande.re/tag.json')
-        except (httpx.HTTPError, requests.exceptions.RequestException) as err:
-            logging.info(f'Retrying session - {err!r}.')
-            continue
-        else:
-            logging.info('Try success.')
-            break
+    session = open_browser_session('https://yande.re/tag.json')
 
     logging.info('Loading all tags ...')
     resp = srequest(session, 'GET', 'https://yande.re/tag.json', params={'limit': '0'})
