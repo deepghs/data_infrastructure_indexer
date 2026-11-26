@@ -202,3 +202,110 @@ def test_index_n_no_smaller_row_count(tmp_path, monkeypatch):
             f'upload of {len(snapshot)} rows would shrink remote (had {len(existing)})'
         )
     assert len(captured[-1]) == 52
+
+
+def _stored_rows(ids, url_prefix='https://old/'):
+    return [
+        {
+            'id': i,
+            'file_url': f'{url_prefix}{i}.jpg',
+            'image_width': 100,
+            'image_height': 100,
+            'rating': 's',
+            'file_size': 999,
+            'mimetype': 'image/jpeg',
+            'source': 'http://old/',
+            'tag_string': '1girl',
+            'parent_id': float(i) if i % 3 == 0 else None,
+        }
+        for i in ids
+    ]
+
+
+@pytest.mark.unittest
+def test_stored_index_lookup(tmp_path):
+    from inf.danbooru.index_n import _StoredIndex
+
+    path = tmp_path / 'records.parquet'
+    rows = _stored_rows(range(100, 0, -1))
+    rows[0]['file_url'] = None
+    pd.DataFrame(rows).to_parquet(path, engine='pyarrow', index=False)
+
+    index = _StoredIndex(str(path))
+    assert len(index) == 100
+    assert index.get(50) == (True, 'https://old/50.jpg')
+    assert index.get(100) == (True, None)
+    assert index.get(101) == (False, None)
+    assert index.get(0) == (False, None)
+    index.record(101, 'https://new/101.jpg')
+    index.record(50, 'https://changed/50.jpg')
+    assert index.get(101) == (True, 'https://new/101.jpg')
+    assert index.get(50) == (True, 'https://changed/50.jpg')
+
+    empty = _StoredIndex(None)
+    assert len(empty) == 0
+    assert empty.get(1) == (False, None)
+
+
+@pytest.mark.unittest
+def test_merge_records_streams_in_order(tmp_path, monkeypatch):
+    """Rows interleave by id across several small batches, replaced rows are replaced, nothing is lost."""
+    import pyarrow.parquet as pq
+    from inf.danbooru import index_n as mod
+
+    monkeypatch.setattr(mod, '_ROW_GROUP_ROWS', 7)
+    old = tmp_path / 'old.parquet'
+    pd.DataFrame(_stored_rows(range(200, 0, -2))).to_parquet(old, engine='pyarrow', index=False)  # even ids
+
+    new = _stored_rows([300, 250, 151, 51, 50, 2, 0], url_prefix='https://new/')
+    new[0]['brand_new_column'] = 'x'
+    out = tmp_path / 'out.parquet'
+    total, head, previous = mod._merge_records(str(old), new, str(out))
+
+    df = pq.read_table(out).to_pandas()
+    expected = sorted(set(range(2, 201, 2)) | {300, 250, 151, 51, 0}, reverse=True)
+    assert previous == 100
+    assert total == len(df) == len(expected) == 105
+    assert df['id'].tolist() == expected
+    assert df['id'].is_unique
+    assert 'brand_new_column' in df.columns
+    by_id = df.set_index('id')
+    assert by_id.loc[50, 'file_url'] == 'https://new/50.jpg'
+    assert by_id.loc[2, 'file_url'] == 'https://new/2.jpg'
+    assert by_id.loc[48, 'file_url'] == 'https://old/48.jpg'
+    assert by_id.loc[300, 'brand_new_column'] == 'x'
+    assert pd.isna(by_id.loc[48, 'brand_new_column'])
+    assert head.column('id').to_pylist() == expected[:50]
+    assert pq.ParquetFile(out).metadata.num_row_groups > 1
+
+
+@pytest.mark.unittest
+def test_index_n_missed_posts_are_picked_up(tmp_path, monkeypatch):
+    """After a gap, every post newer than the stored ones is found, whatever number of pages it takes."""
+    BASE = 8000000  # the crawl stops on its own below id 7306660
+    existing = pd.DataFrame(_stored_rows(range(BASE + 1000, BASE + 900, -1)))
+    # ids 1001..1450 were never stored (earlier runs died), served newest first in pages of 200
+    ids = list(range(BASE + 1450, BASE + 1000, -1))
+    pages = [[_make_post(i, file_url=f'https://new/{i}.jpg') for i in ids[k:k + 200]] for k in range(0, len(ids), 200)]
+    pages.append([_make_post(i, file_url=f'https://old/{i}.jpg') for i in range(BASE + 1000, BASE + 900, -1)])
+    captured: List[pd.DataFrame] = []
+    _drive_sync(tmp_path, monkeypatch, existing_df=existing, pages=pages, captured=captured)
+
+    final = captured[-1]
+    assert final['id'].is_unique
+    assert set(final['id']) == set(range(BASE + 901, BASE + 1451))
+    assert final['id'].tolist() == sorted(final['id'].tolist(), reverse=True)
+
+
+@pytest.mark.unittest
+def test_index_n_many_deploys_keep_every_row(tmp_path, monkeypatch):
+    """A deploy per post means the written file is the next deploy's stored table; none may drop rows."""
+    existing = pd.DataFrame(_stored_rows(range(50, 0, -1)))
+    new_posts = [_make_post(i, file_url=f'https://new/{i}.jpg') for i in range(60, 50, -1)]
+    captured: List[pd.DataFrame] = []
+    _drive_sync(tmp_path, monkeypatch, existing_df=existing, pages=[new_posts], captured=captured)
+
+    assert len(captured) == 10
+    assert [len(x) for x in captured] == list(range(51, 61))
+    assert set(captured[-1]['id']) == set(range(1, 61))
+    assert captured[-1]['id'].is_unique
